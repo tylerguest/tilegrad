@@ -30,7 +30,7 @@ htmlcov/
 .idea/
 .vscode/
 
-# tinygrad/tinytile generated artifacts
+# tinygrad/tilegrad generated artifacts
 /viz/
 *.dot
 *.svg

@@ -5,15 +5,29 @@ class Arg:
   name: str 
 
 @dataclass(frozen=True)
+class Const:
+  value: int | float
+
+@dataclass(frozen=True)
+class Add:
+  lhs: object
+  rhs: object
+
+@dataclass(frozen=True)
+class Mul:
+  lhs: object
+  rhs: object
+
+@dataclass(frozen=True)
 class Load:
   buffer: str
-  index: str
+  index: object
 
 @dataclass(frozen=True)
 class Store:
   buffer: str 
-  index: str 
-  value: int | float | Load
+  index: object
+  value: object
 
 @dataclass(frozen=True)
 class Range:

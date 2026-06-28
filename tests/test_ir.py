@@ -1,5 +1,5 @@
 import unittest
-from tilegrad.ir import Alloc, Arg, Barrier, Kernel, Load, Range, Store
+from tilegrad.ir import Add, Alloc, Arg, Barrier, Const, Kernel, Load, Mul, Range, Store
 
 class TestIR(unittest.TestCase):
   def test_arg(self):
@@ -38,6 +38,20 @@ class TestIR(unittest.TestCase):
     self.assertEqual(kernel.name, "test")
     self.assertEqual(kernel.args, (Arg("out"),))
     self.assertEqual(kernel.body, body)
+
+  def test_const(self):
+    const = Const(3)
+    self.assertEqual(const.value, 3)
+  
+  def test_add(self):
+    expr = Add("i", 1)
+    self.assertEqual(expr.lhs, "i")
+    self.assertEqual(expr.rhs, 1)
+  
+  def test_mul(self):
+    expr = Mul("i", 2)
+    self.assertEqual(expr.lhs, "i")
+    self.assertEqual(expr.rhs, 2)
 
 if __name__ == "__main__":
   unittest.main()
