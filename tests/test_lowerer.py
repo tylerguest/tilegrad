@@ -85,5 +85,45 @@ class TestLowerer(unittest.TestCase):
     out = out.custom_kernel(inp, fxn=mul_index_kernel)[0].realize()
     self.assertEqual(out.tolist(), [5.0, 0.0, 7.0, 0.0])
 
+  def test_ir_two_shared_allocs_kernel(self):
+    def two_shared_allocs_kernel(out, inp):
+      ir = Kernel(
+        "test_ir_two_shared_allocs",
+        (Arg("out"), Arg("inp")),
+        (
+          Alloc("a", 2, "float32", "shared"),
+          Alloc("b", 2, "float32", "shared"),
+          Range("i", 2, (
+            Store("a", "i", Load("inp", "i")),
+            Store("b", "i", Add(Load("inp", "i"), 10)),
+          )),
+          Barrier(),
+          Range("j", 2, (
+            Store("out", Mul("j", 2), Load("a", "j")),
+            Store("out", Add(Mul("j", 2), 1), Load("b", "j")),
+          )),
+        ),
+      )
+      return lower_kernel(ir, out, inp)
+    inp = Tensor([1.0, 2.0])
+    out = Tensor.empty(4)
+    out = out.custom_kernel(inp, fxn=two_shared_allocs_kernel)[0].realize()
+    self.assertEqual(out.tolist(), [1.0, 11.0, 2.0, 12.0])
+
+  def test_duplicate_alloc_name_fails(self):
+    def duplicate_alloc_kernel(out):
+      ir = Kernel(
+        "test_duplicate_alloc_name",
+        (Arg("out"),),
+        (
+          Alloc("smem", 2, "float32", "shared"),
+          Alloc("smem", 2, "float32", "shared"),
+          Range("i", 2, (Store("out", "i", 0),)),
+        ),
+      )
+      return lower_kernel(ir, out)
+    out = Tensor.empty(2)
+    with self.assertRaises(ValueError): out.custom_kernel(fxn=duplicate_alloc_kernel)[0].realize()
+
 if __name__ == "__main__":
   unittest.main()

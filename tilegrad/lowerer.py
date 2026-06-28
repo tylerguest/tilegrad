@@ -1,4 +1,4 @@
-from tinygrad.dtype import AddrSpace
+from tinygrad.dtype import AddrSpace, dtypes
 from tinygrad.uop.ops import AxisType, KernelInfo, UOp
 from tilegrad.ir import Add, Alloc, Barrier, Const, Load, Mul, Range, Store
 
@@ -6,6 +6,11 @@ def lower_shape(shape, env):
   if isinstance(shape, int): return shape
   if shape.endswith(".numel"): return env[shape[:-6]].max_numel()
   raise NotImplementedError(shape)
+
+def lower_dtype(dtype):
+  if not isinstance(dtype, str): return dtype
+  if not hasattr(dtypes, dtype): raise NotImplementedError(dtype)
+  return getattr(dtypes, dtype)
 
 def lower_expr(expr, env, indices):
   if isinstance(expr, (int, float)): return expr
@@ -29,10 +34,17 @@ def lower_range(op, env, effects, indices):
     val = lower_expr(stmt.value, env, indices)
     effects.append(env[stmt.buffer].flatten().index(idx, ptr=True).store(val).end(i))
 
-def lower_alloc(op, env):
+def lower_alloc(op, env, shared_slots):
   if op.space != "shared": raise NotImplementedError(op.space)
-  ref = next(iter(env.values()))
-  env[op.name] = UOp.placeholder((lower_shape(op.shape, env),), ref.dtype.base, slot=0, addrspace=AddrSpace.LOCAL)
+  if op.name in env: raise ValueError(f"duplicate buffer name: {op.name}")
+  slot = shared_slots[0]
+  shared_slots[0] += 1
+  env[op.name] = UOp.placeholder(
+    (lower_shape(op.shape, env),),
+    lower_dtype(op.dtype),
+    slot=slot,
+    addrspace=AddrSpace.LOCAL,
+  )
 
 def lower_barrier(env, effects):
   bar = effects[-1].barrier()
@@ -44,8 +56,9 @@ def lower_kernel(kernel, *args: UOp) -> UOp:
   env = {arg.name: uop for arg, uop in zip(kernel.args, args)}
   effects = []
   indices = {}
+  shared_slots = [0]
   for op in kernel.body:
-    if isinstance(op, Alloc): lower_alloc(op, env)
+    if isinstance(op, Alloc): lower_alloc(op, env, shared_slots)
     elif isinstance(op, Range): lower_range(op, env, effects, indices)
     elif isinstance(op, Barrier): lower_barrier(env, effects)
     else: raise NotImplementedError(type(op).__name__)
