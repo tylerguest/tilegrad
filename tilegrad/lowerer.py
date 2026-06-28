@@ -1,6 +1,6 @@
 from tinygrad.dtype import AddrSpace, dtypes
 from tinygrad.uop.ops import AxisType, KernelInfo, UOp
-from tilegrad.ir import Add, Alloc, Barrier, Const, Load, Mul, Range, Store
+from tilegrad.ir import Add, Alloc, Barrier, Const, FloorDiv, Load, Mod, Mul, Range, Store
 
 def lower_shape(shape, env):
   if isinstance(shape, int): return shape
@@ -20,6 +20,8 @@ def lower_expr(expr, env, indices):
   if isinstance(expr, Const): return expr.value
   if isinstance(expr, Add): return lower_expr(expr.lhs, env, indices) + lower_expr(expr.rhs, env, indices)
   if isinstance(expr, Mul): return lower_expr(expr.lhs, env, indices) * lower_expr(expr.rhs, env, indices)
+  if isinstance(expr, FloorDiv): return lower_expr(expr.lhs, env, indices) // lower_expr(expr.rhs, env, indices)
+  if isinstance(expr, Mod): return lower_expr(expr.lhs, env, indices) % lower_expr(expr.rhs, env, indices)
   if isinstance(expr, Load):
     idx = lower_expr(expr.index, env, indices)
     return env[expr.buffer].flatten().index(idx).load()
@@ -47,6 +49,7 @@ def lower_alloc(op, env, shared_slots):
   )
 
 def lower_barrier(env, effects):
+  if not effects: raise ValueError("barrier requires a previous effect")
   bar = effects[-1].barrier()
   effects.append(bar)
   for name, buf in tuple(env.items()):
@@ -62,4 +65,5 @@ def lower_kernel(kernel, *args: UOp) -> UOp:
     elif isinstance(op, Range): lower_range(op, env, effects, indices)
     elif isinstance(op, Barrier): lower_barrier(env, effects)
     else: raise NotImplementedError(type(op).__name__)
+  if not effects: raise ValueError("kernel must produce at least one effect")
   return UOp.sink(*effects, arg=KernelInfo(name=kernel.name))

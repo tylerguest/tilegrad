@@ -1,6 +1,6 @@
 import unittest
 from tinygrad import Tensor
-from tilegrad.ir import Add, Alloc, Arg, Barrier, Kernel, Load, Mul, Range, Store
+from tilegrad.ir import Add, Alloc, Arg, Barrier, FloorDiv, Kernel, Load, Mod, Mul, Range, Store
 from tilegrad.lowerer import lower_kernel
 
 
@@ -125,5 +125,40 @@ class TestLowerer(unittest.TestCase):
     out = Tensor.empty(2)
     with self.assertRaises(ValueError): out.custom_kernel(fxn=duplicate_alloc_kernel)[0].realize()
 
+  def test_leading_barrier_fails(self):
+    def leading_barrier_kernel(out):
+      ir = Kernel(
+        "test_leading_barrier",
+        (Arg("out"),),
+        (
+          Barrier(),
+          Range("i", 2, (Store("out", "i", 0),)),
+        ),
+      )
+      return lower_kernel(ir, out)
+    out = Tensor.empty(2)
+    with self.assertRaisesRegex(ValueError, "barrier requires a previous effect"): out.custom_kernel(fxn=leading_barrier_kernel)[0].realize()
+
+  def test_empty_kernel_fails(self):
+    ir = Kernel("test_empty_kernel", (Arg("out"),), ())
+    out = Tensor.empty(2)
+    with self.assertRaisesRegex(ValueError, "kernel must produce at least one effect"): lower_kernel(ir, out.uop)
+
+  def test_ir_transpose_2d_index_kernel(self):
+    def transpose_2d_index_kernel(out, inp):
+      row = FloorDiv("i", 3)
+      col = Mod("i", 3)
+      out_idx = Add(Mul(col, 2), row)
+      ir = Kernel(
+        "test_ir_transpose_2d_index",
+        (Arg("out"), Arg("inp")),
+        (Range("i", 6, (Store("out", out_idx, Load("inp", "i")),)),),
+      )
+      return lower_kernel(ir, out, inp)
+    inp = Tensor([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+    out = Tensor.empty(6)
+    out = out.custom_kernel(inp, fxn=transpose_2d_index_kernel)[0].realize()
+    self.assertEqual(out.tolist(), [1.0, 4.0, 2.0, 5.0, 3.0, 6.0])
+  
 if __name__ == "__main__":
   unittest.main()

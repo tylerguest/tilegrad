@@ -1,5 +1,5 @@
 import unittest
-from tilegrad.ir import Add, Alloc, Arg, Barrier, Const, Kernel, Load, Mul, Range, Store
+from tilegrad.ir import Add, Alloc, Arg, Barrier, Const, FloorDiv, Kernel, Load, Mod, Mul, Range, Store
 
 class TestIR(unittest.TestCase):
   def test_arg(self):
@@ -52,6 +52,16 @@ class TestIR(unittest.TestCase):
     expr = Mul("i", 2)
     self.assertEqual(expr.lhs, "i")
     self.assertEqual(expr.rhs, 2)
+  
+  def test_floor_div(self):
+    expr = FloorDiv("i", 3)
+    self.assertEqual(expr.lhs, "i")
+    self.assertEqual(expr.rhs, 3)
+  
+  def test_mod(self):
+    expr = Mod("i", 3)
+    self.assertEqual(expr.lhs, "i")
+    self.assertEqual(expr.rhs, 3)
 
 if __name__ == "__main__":
   unittest.main()

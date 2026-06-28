@@ -19,6 +19,16 @@ class Mul:
   rhs: object
 
 @dataclass(frozen=True)
+class FloorDiv:
+  lhs: object
+  rhs: object
+
+@dataclass(frozen=True)
+class Mod:
+  lhs: object
+  rhs: object
+
+@dataclass(frozen=True)
 class Load:
   buffer: str
   index: object
