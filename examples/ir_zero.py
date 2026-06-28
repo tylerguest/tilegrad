@@ -1,9 +1,9 @@
 from tinygrad import Tensor
-from tinytile.ir import Arg, Kernel, Range, Store
-from tinytile.lowerer import lower_kernel
+from tilegrad.ir import Arg, Kernel, Range, Store
+from tilegrad.lowerer import lower_kernel
 
 def zero_kernel(out):
-  ir = Kernel("tinytile_ir_zero", (Arg("out"),), (Range("i", "out.numel", (Store("out", "i", 0),)),))
+  ir = Kernel("tilegrad_ir_zero", (Arg("out"),), (Range("i", "out.numel", (Store("out", "i", 0),)),))
   return lower_kernel(ir, out)
 
 if __name__ == "__main__":

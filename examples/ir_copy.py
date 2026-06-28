@@ -1,11 +1,11 @@
 from tinygrad import Tensor
 
-from tinytile.ir import Arg, Kernel, Load, Range, Store
-from tinytile.lowerer import lower_kernel
+from tilegrad.ir import Arg, Kernel, Load, Range, Store
+from tilegrad.lowerer import lower_kernel
 
 
 def copy_kernel(out, inp):
-  ir = Kernel("tinytile_ir_copy", (Arg("out"), Arg("inp")), (Range("i", "out.numel", (Store("out", "i", Load("inp", "i")),)),))
+  ir = Kernel("tilegrad_ir_copy", (Arg("out"), Arg("inp")), (Range("i", "out.numel", (Store("out", "i", Load("inp", "i")),)),))
   return lower_kernel(ir, out, inp)
 
 

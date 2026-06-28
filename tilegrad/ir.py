@@ -22,6 +22,17 @@ class Range:
   body: tuple
 
 @dataclass(frozen=True)
+class Alloc:
+  name: str
+  shape: int | str
+  dtype: str
+  space: str
+
+@dataclass(frozen=True)
+class Barrier:
+  pass
+
+@dataclass(frozen=True)
 class Kernel:
   name: str 
   args: tuple[Arg, ...]
