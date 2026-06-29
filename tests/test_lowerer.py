@@ -272,5 +272,38 @@ class TestLowerer(unittest.TestCase):
     out = out.custom_kernel(fxn=fill_kernel)[0].realize()
     self.assertEqual(out.tolist(), [0.0, 1.0, 2.0, 10.0, 11.0, 12.0])
 
+  def test_ir_naive_gemm_2x2_kernel(self):
+    def gemm_kernel(out, a, b):
+      ir = Kernel(
+        "test_ir_naive_gemm_2x2",
+        (Arg("out"), Arg("a"), Arg("b")),
+        (
+          Range("i", 2, (
+            Range("j", 2, (
+              Set("out", Index2D("i", "j", 2), 0),
+              Range("k", 2, (
+                Set(
+                  "out",
+                  Index2D("i", "j", 2),
+                  Add(
+                    Load("out", Index2D("i", "j", 2)),
+                    Mul(
+                      Load("a", Index2D("i", "k", 2)),
+                      Load("b", Index2D("k", "j", 2)),
+                    ),
+                  ),
+                ),
+              ), axis="reduce"),
+            )),
+          )),
+        ),
+      )
+      return lower_kernel(ir, out, a, b)
+    a = Tensor([1.0, 2.0, 3.0, 4.0])
+    b = Tensor([5.0, 6.0, 7.0, 8.0])
+    out = Tensor.empty(4)
+    out = out.custom_kernel(a, b, fxn=gemm_kernel)[0].realize()
+    self.assertEqual(out.tolist(), [19.0, 22.0, 43.0, 50.0])
+
 if __name__ == "__main__":
   unittest.main()

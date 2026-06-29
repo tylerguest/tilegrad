@@ -41,7 +41,7 @@ def lower_expr(expr, env, indices, range_uop=None, axis=None, value_mode=False, 
     return buf.index(lower_index(idx)).load()
   raise NotImplementedError(type(expr).__name__)
 
-def lower_stmt(stmt, env, effects, updated_buffers, indices, range_uops=(), axis="loop"):
+def lower_stmt(stmt, env, effects, updated_buffers, local_updated, indices, range_uops=(), axis="loop"):
   idx = lower_expr(stmt.index, env, indices)
   base = env[stmt.buffer]
   buf = base.flatten()
@@ -58,6 +58,7 @@ def lower_stmt(stmt, env, effects, updated_buffers, indices, range_uops=(), axis
     target = buf[idx]
     env[stmt.buffer] = target.set(val, end=range_uop) if axis == "reduce" else target.set(val)
     updated_buffers.add(stmt.buffer)
+    local_updated.add(stmt.buffer)
   else: raise NotImplementedError(type(stmt).__name__)
 
 def lower_range(op, env, effects, updated_buffers, indices, range_slots, active_ranges=()):
@@ -66,10 +67,15 @@ def lower_range(op, env, effects, updated_buffers, indices, range_slots, active_
   range_slots[0] += 1
   indices = indices | {op.name: i}
   active_ranges = active_ranges + (i,)
+  local_updated = set()
   for stmt in op.body:
-    if isinstance(stmt, Range): lower_range(stmt, env, effects, updated_buffers, indices, range_slots, active_ranges)
-    elif isinstance(stmt, (Store, Set)): lower_stmt(stmt, env, effects, updated_buffers, indices, active_ranges, op.axis)
+    if isinstance(stmt, Range): local_updated |= lower_range(stmt, env, effects, updated_buffers, indices, range_slots, active_ranges)
+    elif isinstance(stmt, (Store, Set)): lower_stmt(stmt, env, effects, updated_buffers, local_updated, indices, active_ranges, op.axis)
     else: raise NotImplementedError(type(stmt).__name__)
+  if op.axis == "loop":
+    for name in local_updated:
+      if name in env: env[name] = env[name].end(i)
+  return local_updated
 
 def lower_alloc(op, env, shared_slots, register_slots):
   if op.name in env: raise ValueError(f"duplicate buffer name: {op.name}")
@@ -108,7 +114,7 @@ def lower_kernel(kernel, *args: UOp) -> UOp:
   range_slots = [0]
   for op in kernel.body:
     if isinstance(op, Alloc): lower_alloc(op, env, shared_slots, register_slots)
-    elif isinstance(op, Set): lower_stmt(op, env, effects, updated_buffers, indices)
+    elif isinstance(op, Set): lower_stmt(op, env, effects, updated_buffers, set(), indices)
     elif isinstance(op, Range): lower_range(op, env, effects, updated_buffers, indices, range_slots)
     elif isinstance(op, Barrier): lower_barrier(env, effects)
     else: raise NotImplementedError(type(op).__name__)
