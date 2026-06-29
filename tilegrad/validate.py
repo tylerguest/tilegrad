@@ -1,4 +1,4 @@
-from tilegrad.ir import Alloc, Barrier, BinaryExpr, Const, Kernel, Load, Range, Store
+from tilegrad.ir import Alloc, Barrier, BinaryExpr, Const, Kernel, Load, Range, Store, Index2D, Set
 
 def validate_shape(shape, buffers):
   if isinstance(shape, int):
@@ -28,6 +28,11 @@ def validate_expr(expr, buffers, indices):
     if expr.buffer not in buffers: raise ValueError(f"unknown buffer: {expr.buffer}")
     validate_expr(expr.index, buffers, indices)
     return
+  if isinstance(expr, Index2D):
+    validate_expr(expr.row, buffers, indices)
+    validate_expr(expr.col, buffers, indices)
+    validate_expr(expr.stride, buffers, indices)
+    return
   raise TypeError(f"unsupported expression: {type(expr).__name__}")
 
 def validate_store(stmt, buffers, indices):
@@ -38,9 +43,10 @@ def validate_store(stmt, buffers, indices):
 def validate_range(op, buffers, indices, saw_effect):
   validate_shape(op.extent, buffers)
   if op.name in indices: raise ValueError(f"duplicate range variable: {op.name}")
+  if op.axis not in ("loop", "reduce"): raise ValueError(f"unknown range axis: {op.axis}")
   indices = indices | {op.name}
   for stmt in op.body:
-    if isinstance(stmt, Store):
+    if isinstance(stmt, (Store, Set)):
       validate_store(stmt, buffers, indices)
       saw_effect[0] = True 
     elif isinstance(stmt, Range): validate_range(stmt, buffers, indices, saw_effect)
@@ -56,9 +62,12 @@ def validate_kernel(kernel):
   for op in kernel.body:
     if isinstance(op, Alloc):
       if op.name in buffers: raise ValueError(f"duplicate buffer name: {op.name}")
+      if op.space not in ("shared", "register"): raise NotImplementedError(op.space)
       validate_shape(op.shape, buffers)
-      if op.space != "shared": raise NotImplementedError(op.space)
       buffers.add(op.name)
+    elif isinstance(op, Set):
+      validate_store(op, buffers, set())
+      saw_effect[0] = True
     elif isinstance(op, Range): validate_range(op, buffers, set(), saw_effect)
     elif isinstance(op, Barrier):
       if not saw_effect[0]: raise ValueError("barrier requires a previous effect")

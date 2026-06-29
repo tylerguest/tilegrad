@@ -1,6 +1,6 @@
 import unittest
 from tinygrad import Tensor
-from tilegrad.ir import Add, Alloc, Arg, Barrier, FloorDiv, Kernel, Load, Mod, Mul, Range, Store
+from tilegrad.ir import Add, Alloc, Arg, Barrier, FloorDiv, Kernel, Load, Mod, Mul, Range, Set, Store
 from tilegrad.lowerer import lower_kernel
 
 
@@ -209,6 +209,22 @@ class TestLowerer(unittest.TestCase):
     out = Tensor.empty(2)
     extra = Tensor.empty(2)
     with self.assertRaisesRegex(ValueError, "expected 1 args, got 2"): lower_kernel(ir, out.uop, extra.uop)
+  
+  def test_ir_sum_reduce_kernel(self):
+    def sum_kernel(out, inp):
+      ir = Kernel(
+        "test_ir_sum_reduce",
+        (Arg("out"), Arg("inp")),
+        (
+          Set("out", 0, 0),
+          Range("i", "inp.numel", (Set("out", 0, Add(Load("out", 0), Load("inp", "i"))),), axis="reduce"),
+        ),
+      )
+      return lower_kernel(ir, out, inp)
+    inp = Tensor([1.0, 2.0, 3.0, 4.0])
+    out = Tensor.empty(1)
+    out = out.custom_kernel(inp, fxn=sum_kernel)[0].realize()
+    self.assertEqual(out.tolist(), [10.0])
 
 if __name__ == "__main__":
   unittest.main()

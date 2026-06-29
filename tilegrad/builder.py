@@ -1,4 +1,4 @@
-from tilegrad.ir import Alloc, Arg, Barrier, Kernel, Load, Range, Store
+from tilegrad.ir import Alloc, Arg, Barrier, Kernel, Load, Range, Set, Store
 
 class KernelBuilder:
   def __init__(self, name, args):
@@ -10,6 +10,9 @@ class KernelBuilder:
   def _current_body(self): return self._range_stack[-1] if self._range_stack else self._body 
   
   def load(self, buffer, index): return Load(buffer, index)
+
+  def set(self, buffer, index, value):
+    self._current_body().append(Set(buffer, index, value))
 
   def store(self, buffer, index, value):
     if not self._range_stack: raise ValueError("store requires an active range")
@@ -23,15 +26,16 @@ class KernelBuilder:
     if self._range_stack: raise ValueError("barrier must be top-level")
     self._body.append(Barrier())
   
-  def range(self, name, extent): return _RangeContext(self, name, extent)
+  def range(self, name, extent, axis="loop"): return _RangeContext(self, name, extent, axis)
 
   def build(self): return Kernel(self.name, self.args, tuple(self._body))
 
 class _RangeContext:
-  def __init__(self, builder, name, extent):
+  def __init__(self, builder, name, extent, axis):
     self.builder = builder
     self.name = name
     self.extent = extent
+    self.axis = axis
 
   def __enter__(self):
     self.builder._range_stack.append([])
@@ -39,5 +43,5 @@ class _RangeContext:
   
   def __exit__(self, exc_type, exc, tb):
     body = self.builder._range_stack.pop()
-    if exc_type is None: self.builder._current_body().append(Range(self.name, self.extent, tuple(body)))
+    if exc_type is None: self.builder._current_body().append(Range(self.name, self.extent, tuple(body), self.axis))
     return False

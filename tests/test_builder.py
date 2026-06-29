@@ -1,7 +1,7 @@
 import unittest
 from tinygrad import Tensor
 from tilegrad.builder import KernelBuilder
-from tilegrad.ir import Alloc, Arg, Barrier, Kernel, Load, Range, Store
+from tilegrad.ir import Add, Alloc, Arg, Barrier, Kernel, Load, Range, Set, Store
 from tilegrad.lowerer import lower_kernel
 
 class TestBuilder(unittest.TestCase):
@@ -56,6 +56,21 @@ class TestBuilder(unittest.TestCase):
     k = KernelBuilder("bad", ("out",))
     with k.range("i", 2): 
       with self.assertRaisesRegex(ValueError, "barrier must be top-level"): k.barrier()
+
+  def test_builder_sum_reduce_ir(self):
+    k = KernelBuilder("sum", ("out", "inp"))
+    k.set("out", 0, 0)
+    with k.range("i", "inp.numel", axis="reduce"):
+      k.set("out", 0, Add(k.load("out", 0), k.load("inp", "i")))
+    expected = Kernel(
+      "sum",
+      (Arg("out"), Arg("inp")),
+      (
+        Set("out", 0, 0),
+        Range("i", "inp.numel", (Set("out", 0, Add(Load("out", 0), Load("inp", "i"))),), "reduce"),
+      ),
+    )
+    self.assertEqual(k.build(), expected)
 
 if __name__ == "__main__":
   unittest.main()
