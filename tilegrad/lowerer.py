@@ -41,31 +41,35 @@ def lower_expr(expr, env, indices, range_uop=None, axis=None, value_mode=False, 
     return buf.index(lower_index(idx)).load()
   raise NotImplementedError(type(expr).__name__)
 
-def lower_stmt(stmt, env, effects, updated_buffers, indices, range_uop=None, axis="loop"):
+def lower_stmt(stmt, env, effects, updated_buffers, indices, range_uops=(), axis="loop"):
   idx = lower_expr(stmt.index, env, indices)
   base = env[stmt.buffer]
   buf = base.flatten()
   if effects: buf = buf.after(effects[-1])
   if isinstance(stmt, Store):
     val = lower_expr(stmt.value, env, indices)
-    effect = buf.index(lower_index(idx), ptr=True).store(val).end(range_uop)
+    if isinstance(val, UOp) and val.dtype != base.dtype.base: val = val.cast(base.dtype.base)
+    effect = buf.index(lower_index(idx), ptr=True).store(val).end(*reversed(range_uops))
     effects.append(effect)
     env[stmt.buffer] = base.after(effect)
   elif isinstance(stmt, Set):
+    range_uop = range_uops[-1] if range_uops else None
     val = lower_expr(stmt.value, env, indices, range_uop, axis, value_mode=True, current_set_buffer=stmt.buffer)
     target = buf[idx]
     env[stmt.buffer] = target.set(val, end=range_uop) if axis == "reduce" else target.set(val)
     updated_buffers.add(stmt.buffer)
   else: raise NotImplementedError(type(stmt).__name__)
 
-def lower_range(op, env, effects, updated_buffers, indices, range_slots):
+def lower_range(op, env, effects, updated_buffers, indices, range_slots, active_ranges=()):
   axis_type = AxisType.REDUCE if op.axis == "reduce" else AxisType.LOOP
   i = UOp.range(lower_shape(op.extent, env), range_slots[0], axis_type)
   range_slots[0] += 1
   indices = indices | {op.name: i}
+  active_ranges = active_ranges + (i,)
   for stmt in op.body:
-    if not isinstance(stmt, (Store, Set)): raise NotImplementedError(type(stmt).__name__)
-    lower_stmt(stmt, env, effects, updated_buffers, indices, i, op.axis)
+    if isinstance(stmt, Range): lower_range(stmt, env, effects, updated_buffers, indices, range_slots, active_ranges)
+    elif isinstance(stmt, (Store, Set)): lower_stmt(stmt, env, effects, updated_buffers, indices, active_ranges, op.axis)
+    else: raise NotImplementedError(type(stmt).__name__)
 
 def lower_alloc(op, env, shared_slots, register_slots):
   if op.name in env: raise ValueError(f"duplicate buffer name: {op.name}")

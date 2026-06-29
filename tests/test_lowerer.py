@@ -1,6 +1,6 @@
 import unittest
 from tinygrad import Tensor
-from tilegrad.ir import Add, Alloc, Arg, Barrier, FloorDiv, Kernel, Load, Mod, Mul, Range, Set, Store
+from tilegrad.ir import Add, Alloc, Arg, Barrier, FloorDiv, Kernel, Load, Mod, Mul, Range, Set, Store, Index2D, Sub
 from tilegrad.lowerer import lower_kernel
 
 
@@ -225,6 +225,52 @@ class TestLowerer(unittest.TestCase):
     out = Tensor.empty(1)
     out = out.custom_kernel(inp, fxn=sum_kernel)[0].realize()
     self.assertEqual(out.tolist(), [10.0])
+
+  def test_ir_index2d_transpose_kernel(self):
+    def transpose_kernel(out, inp):
+      row = FloorDiv("i", 3)
+      col = Mod("i", 3)
+      ir = Kernel(
+        "test_ir_index2d_transpose",
+        (Arg("out"), Arg("inp")),
+        (
+          Range("i", 6, (Store("out", Index2D(col, row, 2), Load("inp", "i")),)),
+        ),
+      )
+      return lower_kernel(ir, out, inp)
+    inp = Tensor([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+    out = Tensor.empty(6)
+    out = out.custom_kernel(inp, fxn=transpose_kernel)[0].realize()
+    self.assertEqual(out.tolist(), [1.0, 4.0, 2.0, 5.0, 3.0, 6.0])
+  
+  def test_ir_sub_reverse_kernel(self):
+    def reverse_kernel(out, inp):
+      ir = Kernel(
+        "test_ir_sub_reverse",
+        (Arg("out"), Arg("inp")),
+        (
+          Range("i", 4, (Store("out", "i", Load("inp", Sub(3, "i"))),)),
+        ),
+      )
+      return lower_kernel(ir, out, inp)
+    inp = Tensor([1.0, 2.0, 3.0, 4.0])
+    out = Tensor.empty(4)
+    out = out.custom_kernel(inp, fxn=reverse_kernel)[0].realize()
+    self.assertEqual(out.tolist(), [4.0, 3.0, 2.0, 1.0])
+
+  def test_ir_nested_range_2d_fill_kernel(self):
+    def fill_kernel(out):
+      ir = Kernel(
+        "test_ir_nested_range_2d_fill",
+        (Arg("out"),),
+        (
+          Range("i", 2, (Range("j", 3, (Store("out", Index2D("i", "j", 3), Add(Mul("i", 10), "j")),)),)),
+        ),
+      )
+      return lower_kernel(ir, out)
+    out = Tensor.empty(6)
+    out = out.custom_kernel(fxn=fill_kernel)[0].realize()
+    self.assertEqual(out.tolist(), [0.0, 1.0, 2.0, 10.0, 11.0, 12.0])
 
 if __name__ == "__main__":
   unittest.main()

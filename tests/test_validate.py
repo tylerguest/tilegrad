@@ -1,5 +1,5 @@
 import unittest
-from tilegrad.ir import Add, Arg, Barrier, Const, Kernel, Load, Range, Store
+from tilegrad.ir import Add, Arg, Barrier, Const, Kernel, Load, Range, Set, Store
 from tilegrad.validate import validate_kernel
 
 class TestValidate(unittest.TestCase):
@@ -86,6 +86,22 @@ class TestValidate(unittest.TestCase):
       (Range("i", "missing.numel", (Store("out", "i", 0),)),),
     )
     with self.assertRaisesRegex(ValueError, "unknown buffer: missing"): validate_kernel(kernel)
+  
+  def test_top_level_set_valid(self):
+    kernel = Kernel(
+      "set",
+      (Arg("out"),),
+      (Set("out", 0, 1),),
+    )
+    validate_kernel(kernel)
+  
+  def test_unknown_range_axis_fails(self):
+    kernel = Kernel(
+      "bad",
+      (Arg("out"),),
+      (Range("i", 2, (Store("out", "i", 0),), axis="bad"),),
+    )
+    with self.assertRaisesRegex(ValueError, "unknown range axis: bad"): validate_kernel(kernel)
 
 if __name__ == "__main__":
   unittest.main()
