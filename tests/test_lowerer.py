@@ -160,5 +160,36 @@ class TestLowerer(unittest.TestCase):
     out = out.custom_kernel(inp, fxn=transpose_2d_index_kernel)[0].realize()
     self.assertEqual(out.tolist(), [1.0, 4.0, 2.0, 5.0, 3.0, 6.0])
   
+  def test_sequential_ranges_overwrite_in_order(self):
+    def sequential_ranges_kernel(out, inp):
+      ir = Kernel(
+        "test_sequential_ranges_overwrite",
+        (Arg("out"), Arg("inp")),
+        (
+          Range("i", 4, (Store("out", "i", 0),)),
+          Range("j", 3, (Store("out", Add("j", 1), Load("inp", "j")),)),
+        ),
+      )
+      return lower_kernel(ir, out, inp)
+    inp = Tensor([1.0, 2.0, 3.0])
+    out = Tensor.empty(4)
+    out = out.custom_kernel(inp, fxn=sequential_ranges_kernel)[0].realize()
+    self.assertEqual(out.tolist(), [0.0, 1.0, 2.0, 3.0])
+  
+  def test_range_body_overwrites_in_order(self):
+    def range_body_order_kernel(out):
+      ir = Kernel(
+        "test_range_body_overwrites",
+        (Arg("out"),),
+        (Range("i", 4, (
+          Store("out", "i", 1),
+          Store("out", "i", 2),
+        )),),
+      )
+      return lower_kernel(ir, out)
+    out = Tensor.empty(4)
+    out = out.custom_kernel(fxn=range_body_order_kernel)[0].realize()
+    self.assertEqual(out.tolist(), [2.0, 2.0, 2.0, 2.0])
+
 if __name__ == "__main__":
   unittest.main()

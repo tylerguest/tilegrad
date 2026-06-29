@@ -34,7 +34,12 @@ def lower_range(op, env, effects, indices):
     if not isinstance(stmt, Store): raise NotImplementedError(type(stmt).__name__)
     idx = lower_expr(stmt.index, env, indices)
     val = lower_expr(stmt.value, env, indices)
-    effects.append(env[stmt.buffer].flatten().index(idx, ptr=True).store(val).end(i))
+    base = env[stmt.buffer]
+    buf = base.flatten()
+    if effects: buf = buf.after(effects[-1])
+    effect = buf.index(idx, ptr=True).store(val).end(i)
+    effects.append(effect)
+    env[stmt.buffer] = base.after(effect)
 
 def lower_alloc(op, env, shared_slots):
   if op.space != "shared": raise NotImplementedError(op.space)
@@ -50,9 +55,9 @@ def lower_alloc(op, env, shared_slots):
 
 def lower_barrier(env, effects):
   if not effects: raise ValueError("barrier requires a previous effect")
-  bar = effects[-1].barrier()
+  bar = effects[-1].barrier(*effects[:-1])
   effects.append(bar)
-  for name, buf in tuple(env.items()):
+  for name, buf in tuple(env.items()): 
     if buf.addrspace is AddrSpace.LOCAL: env[name] = buf.after(bar)
 
 def lower_kernel(kernel, *args: UOp) -> UOp:
