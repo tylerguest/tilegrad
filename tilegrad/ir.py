@@ -1,63 +1,63 @@
 from dataclasses import dataclass
 
-@dataclass(frozen=True)
-class Arg:
-  name: str 
+class Expr: pass
+class Stmt: pass
+class KernelOp: pass
 
 @dataclass(frozen=True)
-class Const:
+class Arg:
+  name: str
+
+@dataclass(frozen=True)
+class Const(Expr):
   value: int | float
 
 @dataclass(frozen=True)
-class Add:
+class BinaryExpr(Expr):
   lhs: object
   rhs: object
 
 @dataclass(frozen=True)
-class Mul:
-  lhs: object
-  rhs: object
+class Add(BinaryExpr): pass
 
 @dataclass(frozen=True)
-class FloorDiv:
-  lhs: object
-  rhs: object
+class Mul(BinaryExpr): pass
 
 @dataclass(frozen=True)
-class Mod:
-  lhs: object
-  rhs: object
+class FloorDiv(BinaryExpr): pass
 
 @dataclass(frozen=True)
-class Load:
+class Mod(BinaryExpr): pass
+
+@dataclass(frozen=True)
+class Load(Expr):
   buffer: str
   index: object
 
 @dataclass(frozen=True)
-class Store:
-  buffer: str 
+class Store(Stmt):
+  buffer: str
   index: object
   value: object
 
 @dataclass(frozen=True)
-class Range:
+class Range(Stmt, KernelOp):
   name: str
-  extent: int | str 
+  extent: int | str
   body: tuple
 
 @dataclass(frozen=True)
-class Alloc:
+class Alloc(KernelOp):
   name: str
   shape: int | str
   dtype: str
   space: str
 
 @dataclass(frozen=True)
-class Barrier:
-  pass
+class Barrier(Stmt, KernelOp): pass
 
 @dataclass(frozen=True)
 class Kernel:
-  name: str 
+  name: str
   args: tuple[Arg, ...]
-  body: tuple 
+  body: tuple

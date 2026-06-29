@@ -1,5 +1,5 @@
 import unittest
-from tilegrad.ir import Add, Alloc, Arg, Barrier, Const, FloorDiv, Kernel, Load, Mod, Mul, Range, Store
+from tilegrad.ir import Add, Alloc, Arg, Barrier, Const, FloorDiv, Kernel, Load, Mod, Mul, Range, Store, BinaryExpr, Expr, KernelOp, Stmt
 
 class TestIR(unittest.TestCase):
   def test_arg(self):
@@ -62,6 +62,30 @@ class TestIR(unittest.TestCase):
     expr = Mod("i", 3)
     self.assertEqual(expr.lhs, "i")
     self.assertEqual(expr.rhs, 3)
+  
+  def test_expr_markers(self):
+    self.assertIsInstance(Const(1), Expr)
+    self.assertIsInstance(Add("i", 1), Expr)
+    self.assertIsInstance(Mul("i", 2), Expr)
+    self.assertIsInstance(FloorDiv("i", 3), Expr)
+    self.assertIsInstance(Mod("i", 3), Expr)
+    self.assertIsInstance(Load("inp", "i"), Expr)
+
+  def test_binary_expr_marker(self):
+    self.assertIsInstance(Add("i", 1), BinaryExpr)
+    self.assertIsInstance(Mul("i", 2), BinaryExpr)
+    self.assertIsInstance(FloorDiv("i", 3), BinaryExpr)
+    self.assertIsInstance(Mod("i", 3), BinaryExpr)
+
+  def test_stmt_markers(self):
+    self.assertIsInstance(Store("out", "i", 0), Stmt)
+    self.assertIsInstance(Range("i", 4, ()), Stmt)
+    self.assertIsInstance(Barrier(), Stmt)
+  
+  def test_kernel_op_markers(self):
+    self.assertIsInstance(Alloc("smem", 4, "float32", "shared"), KernelOp)
+    self.assertIsInstance(Range("i", 4, ()), KernelOp)
+    self.assertIsInstance(Barrier(), KernelOp)
 
 if __name__ == "__main__":
   unittest.main()

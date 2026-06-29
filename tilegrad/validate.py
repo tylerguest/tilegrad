@@ -1,4 +1,4 @@
-from tilegrad.ir import Add, Alloc, Barrier, Const, FloorDiv, Kernel, Load, Mod, Mul, Range, Store
+from tilegrad.ir import Alloc, Barrier, BinaryExpr, Const, Kernel, Load, Range, Store
 
 def validate_shape(shape, buffers):
   if isinstance(shape, int):
@@ -20,7 +20,7 @@ def validate_expr(expr, buffers, indices):
   if isinstance(expr, Const):
     if not isinstance(expr.value, (int, float)): raise TypeError(f"const value must be int or float, got {type(expr.value).__name__}")
     return
-  if isinstance(expr, (Add, Mul, FloorDiv, Mod)):
+  if isinstance(expr, BinaryExpr):
     validate_expr(expr.lhs, buffers, indices)
     validate_expr(expr.rhs, buffers, indices)
     return
