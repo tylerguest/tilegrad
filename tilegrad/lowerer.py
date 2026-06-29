@@ -1,6 +1,7 @@
 from tinygrad.dtype import AddrSpace, dtypes
 from tinygrad.uop.ops import AxisType, KernelInfo, UOp
 from tilegrad.ir import Add, Alloc, Barrier, Const, FloorDiv, Load, Mod, Mul, Range, Store
+from tilegrad.validate import validate_kernel
 
 def lower_shape(shape, env):
   if isinstance(shape, int): return shape
@@ -61,6 +62,7 @@ def lower_barrier(env, effects):
     if buf.addrspace is AddrSpace.LOCAL: env[name] = buf.after(bar)
 
 def lower_kernel(kernel, *args: UOp) -> UOp:
+  validate_kernel(kernel)
   env = {arg.name: uop for arg, uop in zip(kernel.args, args)}
   effects = []
   indices = {}
