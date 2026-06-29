@@ -1,5 +1,5 @@
 import unittest
-from tilegrad.ir import Add, Arg, Barrier, Kernel, Load, Range, Store
+from tilegrad.ir import Add, Arg, Barrier, Const, Kernel, Load, Range, Store
 from tilegrad.validate import validate_kernel
 
 class TestValidate(unittest.TestCase):
@@ -62,6 +62,30 @@ class TestValidate(unittest.TestCase):
   def test_empty_kernel_fails(self):
     kernel = Kernel("bad", (Arg("out"),), ())
     with self.assertRaisesRegex(ValueError, "kernel must produce at least one effect"): validate_kernel(kernel)
+  
+  def test_const_string_fails(self):
+    kernel = Kernel(
+      "bad",
+      (Arg("out"),),
+      (Range("i", 2, (Store("out", "i", Const("i")),)),),
+    )
+    with self.assertRaisesRegex(TypeError, "const value must be int or float, got str"): validate_kernel(kernel)
+  
+  def test_zero_range_extent_fails(self):
+    kernel = Kernel(
+      "bad",
+      (Arg("out"),),
+      (Range("i", 0, (Store("out", "i", 0),)),),
+    )
+    with self.assertRaisesRegex(ValueError, "shape must be positive: 0"): validate_kernel(kernel)
+  
+  def test_unknown_shape_buffer_fails(self):
+    kernel = Kernel(
+      "bad",
+      (Arg("out"),),
+      (Range("i", "missing.numel", (Store("out", "i", 0),)),),
+    )
+    with self.assertRaisesRegex(ValueError, "unknown buffer: missing"): validate_kernel(kernel)
 
 if __name__ == "__main__":
   unittest.main()

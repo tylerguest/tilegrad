@@ -63,6 +63,7 @@ def lower_barrier(env, effects):
 
 def lower_kernel(kernel, *args: UOp) -> UOp:
   validate_kernel(kernel)
+  if len(args) != len(kernel.args): raise ValueError(f"expected {len(kernel.args)} args, got {len(args)}")
   env = {arg.name: uop for arg, uop in zip(kernel.args, args)}
   effects = []
   indices = {}

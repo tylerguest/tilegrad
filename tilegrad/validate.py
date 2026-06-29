@@ -18,7 +18,7 @@ def validate_expr(expr, buffers, indices):
     if expr not in indices: raise ValueError(f"unknown index variable: {expr}")
     return
   if isinstance(expr, Const):
-    validate_expr(expr.value, buffers, indices)
+    if not isinstance(expr.value, (int, float)): raise TypeError(f"const value must be int or float, got {type(expr.value).__name__}")
     return
   if isinstance(expr, (Add, Mul, FloorDiv, Mod)):
     validate_expr(expr.lhs, buffers, indices)

@@ -190,6 +190,25 @@ class TestLowerer(unittest.TestCase):
     out = Tensor.empty(4)
     out = out.custom_kernel(fxn=range_body_order_kernel)[0].realize()
     self.assertEqual(out.tolist(), [2.0, 2.0, 2.0, 2.0])
+  
+  def test_lower_kernel_too_few_args_fails(self):
+    ir = Kernel(
+      "test_too_few_args",
+      (Arg("out"), Arg("inp")),
+      (Range("i", 2, (Store("out", "i", Load("inp", "i")),)),),
+    )
+    out = Tensor.empty(2)
+    with self.assertRaisesRegex(ValueError, "expected 2 args, got 1"): lower_kernel(ir, out.uop)
+
+  def test_lower_kernel_too_many_args_fails(self):
+    ir = Kernel(
+      "test_too_many_args",
+      (Arg("out"),),
+      (Range("i", 2, (Store("out", "i", 0),)),),
+    )
+    out = Tensor.empty(2)
+    extra = Tensor.empty(2)
+    with self.assertRaisesRegex(ValueError, "expected 1 args, got 2"): lower_kernel(ir, out.uop, extra.uop)
 
 if __name__ == "__main__":
   unittest.main()
