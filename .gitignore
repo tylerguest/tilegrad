@@ -25,6 +25,9 @@ htmlcov/
 .env
 .env.*
 
+# Local planning notes
+outline.md
+
 # Editor/OS files
 .DS_Store
 .idea/
