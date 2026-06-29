@@ -50,32 +50,6 @@ Only the lowerer depends on tinygrad internals.
 
 This keeps tinygrad churn isolated to the backend boundary.
 
-## Status
-
-This is an experiment in compiler construction and tiled-kernel programming on top of tinygrad.
-
-The near-term goal is boring correctness:
-
-```text
-define IR semantics -> validate them -> lower them -> test them
-```
-
-Once the IR is stable, the next step is making kernels pleasant to write.
-
-## Direction
-
-The project is intentionally not jumping straight to matmul.
-
-The intended path is:
-
-1. stabilize the IR and validation rules
-2. add a small builder/frontend API
-3. add tile-shaped load/store helpers
-4. build tiled copy and transpose examples
-5. build scalar tiled matmul
-6. explore shared-memory matmul
-7. investigate WMMA/tensor-core lowering
-
 ## Install
 
 The recommended setup is from source with a local tinygrad checkout.
