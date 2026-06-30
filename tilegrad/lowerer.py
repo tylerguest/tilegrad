@@ -49,19 +49,23 @@ def lower_expr(expr, env, indices, recurrence_buffer=None, recurrence_range=None
   if isinstance(expr, Load): return lower_load(expr, env, indices, recurrence_buffer, recurrence_range, value_mode)
   raise NotImplementedError(type(expr).__name__)
 
-def lower_store(stmt, env, effects, sink_effects, buffer_effects, indices, active_ranges):
+def lower_store(stmt, env, effects, sink_effects, buffer_effects, pending_shared, indices, active_ranges):
   idx = lower_expr(stmt.index, env, indices)
   val = lower_expr(stmt.value, env, indices)
   base = env[stmt.buffer]
   buf = base.flatten()
   if stmt.buffer in buffer_effects: buf = buf.after(buffer_effects[stmt.buffer])
   if isinstance(val, UOp) and val.dtype != base.dtype.base: val = val.cast(base.dtype.base)
-  effect = buf.index(lower_index(idx), ptr=True).store(val).end(*active_ranges)
-  effects.append(effect)
-  buffer_effects[stmt.buffer] = effect
-  if base.addrspace is not AddrSpace.LOCAL:
-    sink_effects.append(effect)
-  env[stmt.buffer] = base.after(effect)
+  effect = buf.index(lower_index(idx), ptr=True).store(val)
+  if base.addrspace is AddrSpace.LOCAL:
+    buffer_effects[stmt.buffer] = effect
+    pending_shared.append((effect, active_ranges))
+  else:
+    ended = effect.end(*active_ranges)
+    buffer_effects[stmt.buffer] = ended
+    effects.append(ended)
+    sink_effects.append(ended)
+    env[stmt.buffer] = base.after(ended)
 
 def lower_set(stmt, env, updated_buffers, local_updated, indices, active_ranges, axis):
   idx = lower_expr(stmt.index, env, indices)
@@ -74,7 +78,7 @@ def lower_set(stmt, env, updated_buffers, local_updated, indices, active_ranges,
   updated_buffers.add(stmt.buffer)
   local_updated.add(stmt.buffer)
 
-def lower_range(op, env, effects, sink_effects, buffer_effects, updated_buffers, indices, range_slots, active_ranges=()):
+def lower_range(op, env, effects, sink_effects, buffer_effects, pending_shared, updated_buffers, indices, range_slots, active_ranges=()):
   axis_type = AxisType.REDUCE if op.axis == "reduce" else AxisType.LOOP
   i = UOp.range(lower_shape(op.extent, env), range_slots[0], axis_type)
   range_slots[0] += 1
@@ -82,8 +86,8 @@ def lower_range(op, env, effects, sink_effects, buffer_effects, updated_buffers,
   active_ranges = active_ranges + (i,)
   local_updated = set()
   for stmt in op.body:
-    if isinstance(stmt, Range): local_updated |= lower_range(stmt, env, effects, sink_effects, buffer_effects, updated_buffers, indices, range_slots, active_ranges)
-    elif isinstance(stmt, Store): lower_store(stmt, env, effects, sink_effects, buffer_effects, indices, active_ranges)
+    if isinstance(stmt, Range): local_updated |= lower_range(stmt, env, effects, sink_effects, buffer_effects, pending_shared, updated_buffers, indices, range_slots, active_ranges)
+    elif isinstance(stmt, Store): lower_store(stmt, env, effects, sink_effects, buffer_effects, pending_shared, indices, active_ranges)
     elif isinstance(stmt, Set): lower_set(stmt, env, updated_buffers, local_updated, indices, active_ranges, op.axis)
     else: raise NotImplementedError(type(stmt).__name__)
   if op.axis == "loop":
@@ -104,15 +108,27 @@ def lower_alloc(op, env, shared_slots, register_slots):
   else: raise NotImplementedError(op.space)
   env[op.name] = UOp.placeholder((lower_shape(op.shape, env),), lower_dtype(op.dtype), slot=slot, addrspace=addrspace,)
 
-def lower_barrier(env, effects, buffer_effects):
-  if not effects: raise ValueError("barrier requires a previous effect")
-  bar = UOp.barrier(*effects)
+def lower_barrier(env, effects, buffer_effects, pending_shared):
+  if not effects and not pending_shared: raise ValueError("barrier requires a previous effect")
+  if pending_shared:
+    stores = [s for s, _ in pending_shared]
+    rngs = []
+    for _, r in pending_shared:
+      for x in r:
+        if x not in rngs: rngs.append(x)
+    grouped = UOp.group(*stores) if len(stores) > 1 else stores[0]
+    grouped = grouped.end(*rngs)
+    barrier_srcs = [grouped] + list(effects)
+  else:
+    barrier_srcs = list(effects)
+  bar = UOp.barrier(*barrier_srcs)
   effects.clear()
   effects.append(bar)
   for name, buf in tuple(env.items()):
     if buf.addrspace is AddrSpace.LOCAL:
       env[name] = buf.after(bar)
       buffer_effects[name] = bar
+  pending_shared.clear()
 
 def lower_kernel(kernel, *args: UOp) -> UOp:
   validate_kernel(kernel)
@@ -121,6 +137,7 @@ def lower_kernel(kernel, *args: UOp) -> UOp:
   effects = []
   sink_effects = []
   buffer_effects = {}
+  pending_shared = []
   updated_buffers = set()
   indices = {}
   shared_slots = [0]
@@ -129,9 +146,17 @@ def lower_kernel(kernel, *args: UOp) -> UOp:
   for op in kernel.body:
     if isinstance(op, Alloc): lower_alloc(op, env, shared_slots, register_slots)
     elif isinstance(op, Set): lower_set(op, env, updated_buffers, set(), indices, (), "loop")
-    elif isinstance(op, Range): lower_range(op, env, effects, sink_effects, buffer_effects, updated_buffers, indices, range_slots)
-    elif isinstance(op, Barrier): lower_barrier(env, effects, buffer_effects)
+    elif isinstance(op, Range): lower_range(op, env, effects, sink_effects, buffer_effects, pending_shared, updated_buffers, indices, range_slots)
+    elif isinstance(op, Barrier): lower_barrier(env, effects, buffer_effects, pending_shared)
     else: raise NotImplementedError(type(op).__name__)
+  if pending_shared:
+    stores = [s for s, _ in pending_shared]
+    rngs = []
+    for _, r in pending_shared:
+      for x in r:
+        if x not in rngs: rngs.append(x)
+    grouped = UOp.group(*stores) if len(stores) > 1 else stores[0]
+    sink_effects.append(grouped.end(*rngs))
   sinks = list(sink_effects)
   sinks += [env[arg.name] for arg in kernel.args if arg.name in updated_buffers]
   if not sinks: raise ValueError("kernel must produce at least one effect")
