@@ -1,4 +1,4 @@
-from tilegrad.ir import Alloc, Arg, Barrier, Kernel, Load, Range, Set, Store
+from tilegrad.ir import Add, Alloc, Arg, Barrier, Index2D, Kernel, Load, Range, Set, Store
 
 class KernelBuilder:
   def __init__(self, name, args):
@@ -6,6 +6,7 @@ class KernelBuilder:
     self.args = tuple(Arg(arg) for arg in args)
     self._body = []
     self._range_stack = []
+    self._copy_counter = 0
 
   def _current_body(self): return self._range_stack[-1] if self._range_stack else self._body 
   
@@ -23,10 +24,30 @@ class KernelBuilder:
     self._body.append(Alloc(name, shape, dtype, space))
   
   def barrier(self):
-    if self._range_stack: raise ValueError("barrier must be top-level")
-    self._body.append(Barrier())
+    self._current_body().append(Barrier())
   
   def range(self, name, extent, axis="loop"): return _RangeContext(self, name, extent, axis)
+
+  def copy(self, src, dst, shape, stride=None, src_row_off=0):
+    n = self._copy_counter
+    self._copy_counter += 1
+    body = self._current_body()
+    if len(shape) == 1:
+      name_i0 = f"_c{n}_i0"
+      body.append(Range(name_i0, shape[0], (
+        Store(dst, name_i0, Load(src, name_i0)),
+      )))
+    elif len(shape) == 2:
+      if stride is None: raise ValueError("stride required for 2D copy")
+      name_i0 = f"_c{n}_i0"
+      name_i1 = f"_c{n}_i1"
+      src_row = Add(src_row_off, name_i0) if src_row_off != 0 else name_i0
+      body.append(Range(name_i0, shape[0], (
+        Range(name_i1, shape[1], (
+          Store(dst, Index2D(name_i0, name_i1, shape[1]), Load(src, Index2D(src_row, name_i1, stride))),
+        )),
+      )))
+    else: raise NotImplementedError(f"copy does not support {len(shape)}D")
 
   def build(self): return Kernel(self.name, self.args, tuple(self._body))
 

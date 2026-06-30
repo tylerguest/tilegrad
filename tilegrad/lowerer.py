@@ -89,10 +89,16 @@ def lower_range(op, env, effects, sink_effects, buffer_effects, pending_shared, 
     if isinstance(stmt, Range): local_updated |= lower_range(stmt, env, effects, sink_effects, buffer_effects, pending_shared, updated_buffers, indices, range_slots, active_ranges)
     elif isinstance(stmt, Store): lower_store(stmt, env, effects, sink_effects, buffer_effects, pending_shared, indices, active_ranges)
     elif isinstance(stmt, Set): lower_set(stmt, env, updated_buffers, local_updated, indices, active_ranges, op.axis)
+    elif isinstance(stmt, Barrier): lower_barrier(env, effects, buffer_effects, pending_shared, active_ranges)
     else: raise NotImplementedError(type(stmt).__name__)
   if op.axis == "loop":
     for name in local_updated:
-      if name in env: env[name] = env[name].end(i)
+      if name in env:
+        if env[name].addrspace is AddrSpace.REG:
+          target = env[name].flatten()[0]
+          env[name] = target.set(target, end=i)
+        else:
+          env[name] = env[name].end(i)
   return local_updated
 
 def lower_alloc(op, env, shared_slots, register_slots):
@@ -108,16 +114,16 @@ def lower_alloc(op, env, shared_slots, register_slots):
   else: raise NotImplementedError(op.space)
   env[op.name] = UOp.placeholder((lower_shape(op.shape, env),), lower_dtype(op.dtype), slot=slot, addrspace=addrspace,)
 
-def lower_barrier(env, effects, buffer_effects, pending_shared):
+def lower_barrier(env, effects, buffer_effects, pending_shared, active_ranges=()):
   if not effects and not pending_shared: raise ValueError("barrier requires a previous effect")
   if pending_shared:
     stores = [s for s, _ in pending_shared]
     rngs = []
     for _, r in pending_shared:
       for x in r:
-        if x not in rngs: rngs.append(x)
+        if x not in rngs and x not in active_ranges: rngs.append(x)
     grouped = UOp.group(*stores) if len(stores) > 1 else stores[0]
-    grouped = grouped.end(*rngs)
+    if rngs: grouped = grouped.end(*rngs)
     barrier_srcs = [grouped] + list(effects)
   else:
     barrier_srcs = list(effects)

@@ -50,6 +50,9 @@ def validate_range(op, buffers, indices, saw_effect):
       validate_store(stmt, buffers, indices)
       saw_effect[0] = True 
     elif isinstance(stmt, Range): validate_range(stmt, buffers, indices, saw_effect)
+    elif isinstance(stmt, Barrier):
+      if not saw_effect[0]: raise ValueError("barrier requires a previous effect")
+      saw_effect[0] = True
     else: raise TypeError(f"unsupported range statement: {type(stmt).__name__}")
 
 def validate_kernel(kernel):

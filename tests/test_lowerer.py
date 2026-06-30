@@ -529,5 +529,53 @@ class TestLowerer(unittest.TestCase):
     out = out.custom_kernel(a, b, fxn=gemm_kernel)[0].realize()
     self.assertEqual(out.tolist(), [19.0, 22.0, 43.0, 50.0])
 
+  def test_ir_shared_register_gemm_2x3x2_kernel(self):
+    def gemm_kernel(out, a, b):
+      ir = Kernel(
+        "test_ir_shared_register_gemm_2x3x2",
+        (Arg("out"), Arg("a"), Arg("b")),
+        (
+          Alloc("as", 6, "float32", "shared"),
+          Alloc("bs", 6, "float32", "shared"),
+          Alloc("acc", 1, "float32", "register"),
+          Range("i", 2, (
+            Range("k", 3, (
+              Store("as", Index2D("i", "k", 3), Load("a", Index2D("i", "k", 3))),
+            )),
+          )),
+          Range("k", 3, (
+            Range("j", 2, (
+              Store("bs", Index2D("k", "j", 2), Load("b", Index2D("k", "j", 2))),
+            )),
+          )),
+          Barrier(),
+          Range("i", 2, (
+            Range("j", 2, (
+              Set("acc", 0, 0),
+              Range("k", 3, (
+                Set(
+                  "acc",
+                  0,
+                  Add(
+                    Load("acc", 0),
+                    Mul(
+                      Load("as", Index2D("i", "k", 3)),
+                      Load("bs", Index2D("k", "j", 2)),
+                    ),
+                  ),
+                ),
+              ), axis="reduce"),
+              Set("out", Index2D("i", "j", 2), Load("acc", 0)),
+            )),
+          )),
+        ),
+      )
+      return lower_kernel(ir, out, a, b)
+    a = Tensor([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+    b = Tensor([7.0, 8.0, 9.0, 10.0, 11.0, 12.0])
+    out = Tensor.empty(4)
+    out = out.custom_kernel(a, b, fxn=gemm_kernel)[0].realize()
+    self.assertEqual(out.tolist(), [58.0, 64.0, 139.0, 154.0])
+
 if __name__ == "__main__":
   unittest.main()
