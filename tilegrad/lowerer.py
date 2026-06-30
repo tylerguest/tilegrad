@@ -56,7 +56,7 @@ def lower_store(stmt, env, effects, indices, active_ranges):
   buf = base.flatten()
   if effects: buf = buf.after(effects[-1])
   if isinstance(val, UOp) and val.dtype != base.dtype.base: val = val.cast(base.dtype.base)
-  effect = buf.index(lower_index(idx), ptr=True).store(val).end(*reversed(active_ranges))
+  effect = buf.index(lower_index(idx), ptr=True).store(val).end(*active_ranges)
   effects.append(effect)
   env[stmt.buffer] = base.after(effect)
 
@@ -64,7 +64,9 @@ def lower_set(stmt, env, updated_buffers, local_updated, indices, active_ranges,
   idx = lower_expr(stmt.index, env, indices)
   recurrence_range = active_ranges[-1] if axis == "reduce" and active_ranges else None
   val = lower_expr(stmt.value, env, indices, recurrence_buffer=stmt.buffer, recurrence_range=recurrence_range, value_mode=True,)
-  target = env[stmt.buffer].flatten()[idx]
+  buf = env[stmt.buffer]
+  if axis != "reduce" and active_ranges and buf.addrspace is AddrSpace.REG: buf = buf.after(*active_ranges)
+  target = buf.flatten()[idx]
   env[stmt.buffer] = target.set(val, end=recurrence_range) if axis == "reduce" else target.set(val)
   updated_buffers.add(stmt.buffer)
   local_updated.add(stmt.buffer)
