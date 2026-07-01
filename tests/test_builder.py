@@ -220,6 +220,75 @@ class TestBuilder(unittest.TestCase):
       ),
     )
     self.assertEqual(k.build(), expected)
+
+  def test_builder_copy_1d_col_offset_ir(self):
+    k = KernelBuilder("copy_1d_col_offset", ("out", "inp"))
+    k.alloc("smem", 3, "float32")
+    with k.range("ko", 2):
+      k.copy("inp", "smem", shape=(3,), src_col_off=Mul("ko", 3))
+    expected = Kernel(
+      "copy_1d_col_offset",
+      (Arg("out"), Arg("inp")),
+      (
+        Alloc("smem", 3, "float32", "shared"),
+        Range("ko", 2, (
+          Range("_c0_i0", 3, (
+            Store("smem", "_c0_i0", Load("inp", Add(Mul("ko", 3), "_c0_i0"))),
+          )),
+        )),
+      ),
+    )
+    self.assertEqual(k.build(), expected)
+
+  def test_builder_copy_1d_strided_ir(self):
+    k = KernelBuilder("copy_1d_strided", ("out", "inp"))
+    k.alloc("smem", 3, "float32")
+    with k.range("ko", 2):
+      with k.range("j", 2):
+        k.copy("inp", "smem", shape=(3,), stride=2, src_row_off=Mul("ko", 3), src_col_off="j")
+    expected = Kernel(
+      "copy_1d_strided",
+      (Arg("out"), Arg("inp")),
+      (
+        Alloc("smem", 3, "float32", "shared"),
+        Range("ko", 2, (
+          Range("j", 2, (
+            Range("_c0_i0", 3, (
+              Store("smem", "_c0_i0", Load("inp", Index2D(Add(Mul("ko", 3), "_c0_i0"), "j", 2))),
+            )),
+          )),
+        )),
+      ),
+    )
+    self.assertEqual(k.build(), expected)
+
+  def test_builder_copy_2d_col_offset_ir(self):
+    k = KernelBuilder("copy_2d_col_offset", ("out", "inp"))
+    k.alloc("smem", 6, "float32")
+    with k.range("i", 2):
+      with k.range("ko", 2):
+        k.copy("inp", "smem", shape=(2, 3), stride=6, src_row_off="i", src_col_off=Mul("ko", 3))
+    expected = Kernel(
+      "copy_2d_col_offset",
+      (Arg("out"), Arg("inp")),
+      (
+        Alloc("smem", 6, "float32", "shared"),
+        Range("i", 2, (
+          Range("ko", 2, (
+            Range("_c0_i0", 2, (
+              Range("_c0_i1", 3, (
+                Store(
+                  "smem",
+                  Index2D("_c0_i0", "_c0_i1", 3),
+                  Load("inp", Index2D(Add("i", "_c0_i0"), Add(Mul("ko", 3), "_c0_i1"), 6)),
+                ),
+              )),
+            )),
+          )),
+        )),
+      ),
+    )
+    self.assertEqual(k.build(), expected)
   
   def test_builder_copy_2d_kernel_runs(self):
     def copy_kernel(out, inp):
