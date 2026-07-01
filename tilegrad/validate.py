@@ -1,4 +1,4 @@
-from tilegrad.ir import Alloc, Barrier, BinaryExpr, Const, Kernel, Load, Not, Range, Store, StoreIf, Index2D, Set, SetIf, Var
+from tilegrad.ir import Alloc, Barrier, BinaryExpr, Const, Kernel, Load, LoadIf, Not, Range, Store, StoreIf, Index2D, Set, SetIf, Var
 
 def validate_shape(shape, buffers):
   if isinstance(shape, int):
@@ -31,6 +31,11 @@ def validate_expr(expr, buffers, indices):
     validate_expr(expr.rhs, buffers, indices)
     return
   if isinstance(expr, Load):
+    if expr.buffer not in buffers: raise ValueError(f"unknown buffer: {expr.buffer}")
+    validate_expr(expr.index, buffers, indices)
+    return
+  if isinstance(expr, LoadIf):
+    validate_expr(expr.cond, buffers, indices)
     if expr.buffer not in buffers: raise ValueError(f"unknown buffer: {expr.buffer}")
     validate_expr(expr.index, buffers, indices)
     return

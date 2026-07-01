@@ -108,6 +108,12 @@ class Load(Expr):
   index: object
 
 @dataclass(frozen=True)
+class LoadIf(Expr):
+  cond: object
+  buffer: str
+  index: object
+
+@dataclass(frozen=True)
 class Store(Stmt):
   buffer: str
   index: object

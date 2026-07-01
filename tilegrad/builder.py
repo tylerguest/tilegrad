@@ -1,4 +1,4 @@
-from tilegrad.ir import Add, Alloc, Arg, Barrier, Index2D, Kernel, Load, Mul, Range, Set, SetIf, Store, StoreIf, Var
+from tilegrad.ir import Add, Alloc, Arg, Barrier, Index2D, Kernel, Load, LoadIf, Mul, Range, Set, SetIf, Store, StoreIf, Var
 
 class BufferRef:
   def __init__(self, builder, name, shape=None):
@@ -48,6 +48,8 @@ class KernelBuilder:
   def buffers(self, *names): return tuple(self.buffer(name) for name in names)
   
   def load(self, buffer, index): return Load(_buffer_name(buffer), _buffer_index(buffer, index))
+
+  def load_if(self, cond, buffer, index): return LoadIf(cond, _buffer_name(buffer), _buffer_index(buffer, index))
 
   def set(self, buffer, index, value): self._current_body().append(Set(_buffer_name(buffer), _buffer_index(buffer, index), value))
 

@@ -1,7 +1,7 @@
 import unittest
 from tinygrad import Tensor
 from tilegrad.builder import KernelBuilder
-from tilegrad.ir import Add, Alloc, Arg, Barrier, Index2D, Kernel, Load, Mul, Range, Set, SetIf, Store, Var, And, Lt, StoreIf
+from tilegrad.ir import Add, Alloc, Arg, Barrier, Index2D, Kernel, Load, LoadIf, Mul, Range, Set, SetIf, Store, Var, And, Lt, StoreIf
 from tilegrad.lowerer import lower_kernel
 
 class TestBuilder(unittest.TestCase):
@@ -607,6 +607,36 @@ class TestBuilder(unittest.TestCase):
             "out",
             Index2D(Var("i"), Var("j"), 3),
             Load("inp", Index2D(Var("i"), Var("j"), 3)),
+          ),
+        )),
+      )),
+    ))
+
+  def test_load_if_ir(self):
+    k = KernelBuilder("load_if", ("out", "inp"))
+    out = k.buffer("out")
+    inp = k.buffer("inp")
+    with k.range("i", 5) as i: out[i] = k.load_if(i < 4, inp, i)
+    self.assertEqual(k.build().body, (
+      Range("i", 5, (
+        Set("out", Var("i"), LoadIf(Lt(Var("i"), 4), "inp", Var("i"))),
+      )),
+    ))
+
+  def test_load_if_accepts_2d_buffer_ref_index(self):
+    k = KernelBuilder("load_if_2d", ("out", "inp"))
+    out = k.buffer("out", shape=(4, 4))
+    inp = k.buffer("inp", shape=(3, 2))
+    with k.range("i", 4) as i:
+      with k.range("j", 4) as j:
+        out[i, j] = k.load_if((i < 3) & (j < 2), inp, (i, j))
+    self.assertEqual(k.build().body, (
+      Range("i", 4, (
+        Range("j", 4, (
+          Set(
+            "out",
+            Index2D(Var("i"), Var("j"), 4),
+            LoadIf(And(Lt(Var("i"), 3), Lt(Var("j"), 2)), "inp", Index2D(Var("i"), Var("j"), 2)),
           ),
         )),
       )),

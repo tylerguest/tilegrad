@@ -1,6 +1,6 @@
 from tinygrad.dtype import AddrSpace, Invalid, dtypes
 from tinygrad.uop.ops import AxisType, KernelInfo, UOp
-from tilegrad.ir import Add, Alloc, And, Barrier, Const, Eq, FloorDiv, Ge, Gt, Index2D, Le, Load, Lt, Mod, Mul, Ne, Not, Or, Range, Set, SetIf, Store, StoreIf, Sub, Var
+from tilegrad.ir import Add, Alloc, And, Barrier, Const, Eq, FloorDiv, Ge, Gt, Index2D, Le, Load, LoadIf, Lt, Mod, Mul, Ne, Not, Or, Range, Set, SetIf, Store, StoreIf, Sub, Var
 from tilegrad.validate import validate_kernel
 
 def lower_shape(shape, env):
@@ -30,6 +30,21 @@ def lower_load(expr, env, indices, recurrence_buffer, recurrence_range, recurren
   buf = buf.flatten()
   if value_mode: return buf[idx]
   return buf.index(lower_index(idx)).load()
+
+def lower_load_if(expr, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode):
+  cond = lower_expr(expr.cond, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode)
+  idx = lower_expr(expr.index, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode)
+  buf = env[expr.buffer]
+  if expr.buffer == recurrence_buffer and recurrence_range is not None:
+    if recurrence_uop is not None: buf = recurrence_uop
+    buf = buf.after(recurrence_range)
+  buf = buf.flatten()
+  if value_mode:
+    val = buf[idx]
+    return cond.where(val, val.const_like(0)) if isinstance(cond, UOp) else val if cond else val.const_like(0)
+  idx = lower_index(idx)
+  guarded_idx = idx.valid(cond) if isinstance(cond, UOp) else idx if cond else idx.const_like(Invalid)
+  return buf.index(guarded_idx).load()
 
 def lower_expr(expr, env, indices, recurrence_buffer=None, recurrence_range=None, recurrence_uop=None, value_mode=False):
   if isinstance(expr, (int, float)): return expr
@@ -62,6 +77,7 @@ def lower_expr(expr, env, indices, recurrence_buffer=None, recurrence_range=None
     col = lower_expr(expr.col, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode)
     stride = lower_expr(expr.stride, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode)
     return row * stride + col
+  if isinstance(expr, LoadIf): return lower_load_if(expr, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode)
   if isinstance(expr, Load): return lower_load(expr, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode)
   raise NotImplementedError(type(expr).__name__)
 

@@ -1,5 +1,5 @@
 import unittest
-from tilegrad.ir import Add, Alloc, And, Arg, Barrier, Const, FloorDiv, Kernel, Load, Lt, Mod, Mul, Range, Store, BinaryExpr, Expr, KernelOp, Stmt, Set, SetIf, Sub, Index2D, Var, and_, lt
+from tilegrad.ir import Add, Alloc, And, Arg, Barrier, Const, FloorDiv, Kernel, Load, LoadIf, Lt, Mod, Mul, Range, Store, BinaryExpr, Expr, KernelOp, Stmt, Set, SetIf, Sub, Index2D, Var, and_, lt
 
 class TestIR(unittest.TestCase):
   def test_arg(self):
@@ -70,6 +70,7 @@ class TestIR(unittest.TestCase):
     self.assertIsInstance(FloorDiv("i", 3), Expr)
     self.assertIsInstance(Mod("i", 3), Expr)
     self.assertIsInstance(Load("inp", "i"), Expr)
+    self.assertIsInstance(LoadIf(Lt(Var("i"), 4), "inp", Var("i")), Expr)
     self.assertIsInstance(Sub("i", 1), Expr)
     self.assertIsInstance(Index2D("row", "col", 4), Expr)
 
@@ -116,6 +117,13 @@ class TestIR(unittest.TestCase):
     self.assertEqual(stmt.index, Var("i"))
     self.assertEqual(stmt.value, 1)
     self.assertIsInstance(stmt, Stmt)
+
+  def test_load_if(self):
+    expr = LoadIf(Lt(Var("i"), 4), "inp", Var("i"))
+    self.assertEqual(expr.cond, Lt(Var("i"), 4))
+    self.assertEqual(expr.buffer, "inp")
+    self.assertEqual(expr.index, Var("i"))
+    self.assertIsInstance(expr, Expr)
 
   def test_predicate_helpers(self):
     self.assertEqual(lt(Var("i"), 4), Lt(Var("i"), 4))
