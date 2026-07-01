@@ -90,6 +90,13 @@ class Set(Stmt):
   value: object
 
 @dataclass(frozen=True)
+class SetIf(Stmt):
+  cond: object
+  buffer: str
+  index: object
+  value: object
+
+@dataclass(frozen=True)
 class Index2D(Expr):
   row: object
   col: object

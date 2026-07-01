@@ -1,6 +1,6 @@
 from tinygrad.dtype import AddrSpace, Invalid, dtypes
 from tinygrad.uop.ops import AxisType, KernelInfo, UOp
-from tilegrad.ir import Add, Alloc, And, Barrier, Const, Eq, FloorDiv, Ge, Gt, Index2D, Le, Load, Lt, Mod, Mul, Ne, Not, Or, Range, Set, Store, StoreIf, Sub, Var
+from tilegrad.ir import Add, Alloc, And, Barrier, Const, Eq, FloorDiv, Ge, Gt, Index2D, Le, Load, Lt, Mod, Mul, Ne, Not, Or, Range, Set, SetIf, Store, StoreIf, Sub, Var
 from tilegrad.validate import validate_kernel
 
 def lower_shape(shape, env):
@@ -45,7 +45,6 @@ def lower_expr(expr, env, indices, recurrence_buffer=None, recurrence_range=None
   if isinstance(expr, Mul): return lower_binary(expr, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode, lambda lhs, rhs: lhs * rhs)
   if isinstance(expr, FloorDiv): return lower_binary(expr, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode, lambda lhs, rhs: lhs // rhs)
   if isinstance(expr, Mod): return lower_binary(expr, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode, lambda lhs, rhs: lhs % rhs)
-  
   if isinstance(expr, Lt): return lower_binary(expr, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode, lambda lhs, rhs: lhs < rhs)
   if isinstance(expr, Le): return lower_binary(expr, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode, lambda lhs, rhs: (rhs < lhs).logical_not())
   if isinstance(expr, Gt): return lower_binary(expr, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode, lambda lhs, rhs: rhs < lhs)
@@ -105,7 +104,7 @@ def lower_store(stmt, env, effects, sink_effects, buffer_effects, pending_shared
     sink_effects.append(ended)
     env[stmt.buffer] = base.after(ended)
 
-def lower_set(stmt, env, updated_buffers, local_updated, indices, active_ranges, axis, register_scopes):
+def lower_set(stmt, env, updated_buffers, local_updated, indices, active_ranges, axis, register_scopes, cond=None):
   idx = lower_expr(stmt.index, env, indices)
   recurrence_range = active_ranges[-1] if axis == "reduce" and active_ranges else None
   buf = env[stmt.buffer]
@@ -123,6 +122,12 @@ def lower_set(stmt, env, updated_buffers, local_updated, indices, active_ranges,
     stmt.value, env, indices, recurrence_buffer=stmt.buffer,
     recurrence_range=recurrence_range, recurrence_uop=recurrence_uop, value_mode=True,)
   target = buf.flatten()[idx]
+  if cond is not None:
+    cond_uop = lower_expr(
+      cond, env, indices, recurrence_buffer=stmt.buffer,
+      recurrence_range=recurrence_range, recurrence_uop=recurrence_uop, value_mode=True,
+    )
+    val = cond_uop.where(val, target) if isinstance(cond_uop, UOp) else val if cond_uop else target
   next_buf = target.set(val, end=(recurrence_range, *register_end_ranges)) if axis == "reduce" else target.set(val)
   if buf.addrspace is not AddrSpace.REG and isinstance(val, UOp):
     leaked_ranges = [r for r in val.ranges if r not in active_ranges]
@@ -143,6 +148,7 @@ def lower_range(op, env, effects, sink_effects, buffer_effects, pending_shared, 
                                                              updated_buffers, indices, range_slots, register_scopes, active_ranges)
     elif isinstance(stmt, Store): lower_store(stmt, env, effects, sink_effects, buffer_effects, pending_shared, indices, active_ranges)
     elif isinstance(stmt, StoreIf): lower_store_if(stmt, env, effects, sink_effects, buffer_effects, pending_shared, indices, active_ranges)
+    elif isinstance(stmt, SetIf): lower_set(stmt, env, updated_buffers, local_updated, indices, active_ranges, op.axis, register_scopes, cond=stmt.cond)
     elif isinstance(stmt, Set): lower_set(stmt, env, updated_buffers, local_updated, indices, active_ranges, op.axis, register_scopes)
     elif isinstance(stmt, Barrier): lower_barrier(env, effects, buffer_effects, pending_shared, active_ranges)
     else: raise NotImplementedError(type(stmt).__name__)
@@ -202,6 +208,7 @@ def lower_kernel(kernel, *args: UOp) -> UOp:
   register_scopes = {}
   for op in kernel.body:
     if isinstance(op, Alloc): lower_alloc(op, env, shared_slots, register_slots)
+    elif isinstance(op, SetIf): lower_set(op, env, updated_buffers, set(), indices, (), "loop", register_scopes, cond=op.cond)
     elif isinstance(op, Set): lower_set(op, env, updated_buffers, set(), indices, (), "loop", register_scopes)
     elif isinstance(op, Range): lower_range(op, env, effects, sink_effects, buffer_effects, pending_shared, updated_buffers, indices, range_slots, register_scopes)
     elif isinstance(op, Barrier): lower_barrier(env, effects, buffer_effects, pending_shared)

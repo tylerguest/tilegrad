@@ -1,7 +1,7 @@
 import unittest
 from tinygrad import Tensor
 from tilegrad.builder import KernelBuilder
-from tilegrad.ir import Add, Alloc, Arg, Barrier, Index2D, Kernel, Load, Mul, Range, Set, Store, Var, And, Lt, StoreIf
+from tilegrad.ir import Add, Alloc, Arg, Barrier, Index2D, Kernel, Load, Mul, Range, Set, SetIf, Store, Var, And, Lt, StoreIf
 from tilegrad.lowerer import lower_kernel
 
 class TestBuilder(unittest.TestCase):
@@ -516,6 +516,37 @@ class TestBuilder(unittest.TestCase):
     self.assertEqual(k.build().body, (
       Range("_c0_i0", 4, (
         Store("out", "_c0_i0", Load("inp", "_c0_i0")),
+      )),
+    ))
+
+  def test_set_if_ir(self):
+    k = KernelBuilder("set_if", ("out", "inp"))
+    out = k.buffer("out")
+    inp = k.buffer("inp")
+    with k.range("i", 4) as i: k.set_if(i < 3, out, i, inp[i])
+    self.assertEqual(k.build().body, (
+      Range("i", 4, (
+        SetIf(Lt(Var("i"), 3), "out", Var("i"), Load("inp", Var("i"))),
+      )),
+    ))
+
+  def test_set_if_accepts_buffer_ref_tuple_index(self):
+    k = KernelBuilder("set_if_2d", ("out", "inp"))
+    out = k.buffer("out", shape=(2, 3))
+    inp = k.buffer("inp", shape=(2, 3))
+    with k.range("i", 2) as i:
+      with k.range("j", 3) as j:
+        k.set_if(i < 1, out, (i, j), inp[i, j])
+    self.assertEqual(k.build().body, (
+      Range("i", 2, (
+        Range("j", 3, (
+          SetIf(
+            Lt(Var("i"), 1),
+            "out",
+            Index2D(Var("i"), Var("j"), 3),
+            Load("inp", Index2D(Var("i"), Var("j"), 3)),
+          ),
+        )),
       )),
     ))
 

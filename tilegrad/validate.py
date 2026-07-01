@@ -1,4 +1,4 @@
-from tilegrad.ir import Alloc, Barrier, BinaryExpr, Const, Kernel, Load, Not, Range, Store, StoreIf, Index2D, Set, Var
+from tilegrad.ir import Alloc, Barrier, BinaryExpr, Const, Kernel, Load, Not, Range, Store, StoreIf, Index2D, Set, SetIf, Var
 
 def validate_shape(shape, buffers):
   if isinstance(shape, int):
@@ -52,7 +52,7 @@ def validate_range(op, buffers, indices, saw_effect):
   if op.axis not in ("loop", "reduce"): raise ValueError(f"unknown range axis: {op.axis}")
   indices = indices | {op.name}
   for stmt in op.body:
-    if isinstance(stmt, StoreIf):
+    if isinstance(stmt, (StoreIf, SetIf)):
       validate_expr(stmt.cond, buffers, indices)
       validate_store(stmt, buffers, indices)
       saw_effect[0] = True
@@ -78,6 +78,10 @@ def validate_kernel(kernel):
       if op.space not in ("shared", "register"): raise NotImplementedError(op.space)
       validate_shape(op.shape, buffers)
       buffers.add(op.name)
+    elif isinstance(op, SetIf):
+      validate_expr(op.cond, buffers, set())
+      validate_store(op, buffers, set())
+      saw_effect[0] = True
     elif isinstance(op, Set):
       validate_store(op, buffers, set())
       saw_effect[0] = True

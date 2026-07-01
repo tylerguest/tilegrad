@@ -1,4 +1,4 @@
-from tilegrad.ir import Add, Alloc, Arg, Barrier, Index2D, Kernel, Load, Range, Set, Store, StoreIf, Var
+from tilegrad.ir import Add, Alloc, Arg, Barrier, Index2D, Kernel, Load, Range, Set, SetIf, Store, StoreIf, Var
 
 class BufferRef:
   def __init__(self, builder, name, shape=None):
@@ -39,7 +39,10 @@ class KernelBuilder:
   def load(self, buffer, index): return Load(_buffer_name(buffer), index)
 
   def set(self, buffer, index, value): self._current_body().append(Set(_buffer_name(buffer), index, value))
-  
+
+  def set_if(self, cond, buffer, index, value):
+    self._current_body().append(SetIf(cond, _buffer_name(buffer), _buffer_index(buffer, index), value))
+
   def store(self, buffer, index, value):
     if not self._range_stack: raise ValueError("store requires an active range")
     self._current_body().append(Store(_buffer_name(buffer), index, value))

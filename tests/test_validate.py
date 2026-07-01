@@ -1,5 +1,5 @@
 import unittest
-from tilegrad.ir import Add, Arg, Barrier, Const, Kernel, Load, Range, Set, Store, Var, lt, And, Lt, StoreIf
+from tilegrad.ir import Add, Arg, Barrier, Const, Kernel, Load, Range, Set, SetIf, Store, Var, lt, And, Lt, StoreIf
 from tilegrad.validate import validate_kernel
 
 class TestValidate(unittest.TestCase):
@@ -126,6 +126,30 @@ class TestValidate(unittest.TestCase):
       (Range("i", 4, (StoreIf(lt(Var("i"), 3), "out", Var("i"), Load("inp", Var("i"))),)),),
     )
     validate_kernel(kernel)
+
+  def test_validate_accepts_set_if(self):
+    kernel = Kernel(
+      "guarded_set",
+      (Arg("out"), Arg("inp")),
+      (Range("i", 4, (SetIf(lt(Var("i"), 3), "out", Var("i"), Load("inp", Var("i"))),)),),
+    )
+    validate_kernel(kernel)
+
+  def test_validate_rejects_set_if_unknown_predicate_var(self):
+    kernel = Kernel(
+      "bad_guarded_set",
+      (Arg("out"), Arg("inp")),
+      (Range("i", 4, (SetIf(lt(Var("j"), 3), "out", Var("i"), Load("inp", Var("i"))),)),),
+    )
+    with self.assertRaisesRegex(ValueError, "unknown index variable: j"): validate_kernel(kernel)
+
+  def test_validate_rejects_set_if_unknown_buffer(self):
+    kernel = Kernel(
+      "bad_guarded_set_buffer",
+      (Arg("out"), Arg("inp")),
+      (Range("i", 4, (SetIf(lt(Var("i"), 3), "missing", Var("i"), Load("inp", Var("i"))),)),),
+    )
+    with self.assertRaisesRegex(ValueError, "unknown buffer: missing"): validate_kernel(kernel)
 
 if __name__ == "__main__":
   unittest.main()
