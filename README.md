@@ -37,7 +37,7 @@ The goal is not to replace tinygrad. The goal is to make custom tiled kernels ea
 Clone tilegrad and install it with a local tinygrad checkout:
 
 ```bash
-git clone <tilegrad-repo-url>
+git clone https://github.com/tylerguest/tilegrad.git
 cd tilegrad
 
 python3 -m venv .venv
