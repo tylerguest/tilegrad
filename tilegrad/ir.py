@@ -77,3 +77,10 @@ class Kernel:
   name: str
   args: tuple[Arg, ...]
   body: tuple
+
+def add(lhs:object, rhs:object): return Add(lhs, rhs)
+def sub(lhs:object, rhs:object): return Sub(lhs, rhs)
+def mul(lhs:object, rhs:object): return Mul(lhs, rhs)
+def floordiv(lhs:object, rhs:object): return FloorDiv(lhs, rhs)
+def mod(lhs:object, rhs:object): return Mod(lhs, rhs)
+def idx2(row:object, col:object, stride:object): return Index2D(row, col, stride)

@@ -12,8 +12,7 @@ class KernelBuilder:
   
   def load(self, buffer, index): return Load(buffer, index)
 
-  def set(self, buffer, index, value):
-    self._current_body().append(Set(buffer, index, value))
+  def set(self, buffer, index, value): self._current_body().append(Set(buffer, index, value))
 
   def store(self, buffer, index, value):
     if not self._range_stack: raise ValueError("store requires an active range")
@@ -23,8 +22,7 @@ class KernelBuilder:
     if self._range_stack: raise ValueError("alloc must be top-level")
     self._body.append(Alloc(name, shape, dtype, space))
   
-  def barrier(self):
-    self._current_body().append(Barrier())
+  def barrier(self): self._current_body().append(Barrier())
   
   def range(self, name, extent, axis="loop"): return _RangeContext(self, name, extent, axis)
 
@@ -34,14 +32,11 @@ class KernelBuilder:
     body = self._current_body()
     if len(shape) == 1:
       name_i0 = f"_c{n}_i0"
-      if stride is None:
-        src_idx = Add(src_col_off, name_i0) if src_col_off != 0 else name_i0
+      if stride is None: src_idx = Add(src_col_off, name_i0) if src_col_off != 0 else name_i0
       else:
         src_row = Add(src_row_off, name_i0) if src_row_off != 0 else name_i0
         src_idx = Index2D(src_row, src_col_off, stride)
-      body.append(Range(name_i0, shape[0], (
-        Store(dst, name_i0, Load(src, src_idx)),
-      )))
+      body.append(Range(name_i0, shape[0], (Store(dst, name_i0, Load(src, src_idx)),)))
     elif len(shape) == 2:
       if stride is None: raise ValueError("stride required for 2D copy")
       name_i0 = f"_c{n}_i0"
@@ -54,7 +49,6 @@ class KernelBuilder:
         )),
       )))
     else: raise NotImplementedError(f"copy does not support {len(shape)}D")
-
   def build(self): return Kernel(self.name, self.args, tuple(self._body))
 
 class _RangeContext:

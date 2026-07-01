@@ -84,8 +84,7 @@ def lower_set(stmt, env, updated_buffers, local_updated, indices, active_ranges,
     recurrence_uop = buf
   val = lower_expr(
     stmt.value, env, indices, recurrence_buffer=stmt.buffer,
-    recurrence_range=recurrence_range, recurrence_uop=recurrence_uop, value_mode=True,
-  )
+    recurrence_range=recurrence_range, recurrence_uop=recurrence_uop, value_mode=True,)
   target = buf.flatten()[idx]
   next_buf = target.set(val, end=(recurrence_range, *register_end_ranges)) if axis == "reduce" else target.set(val)
   if buf.addrspace is not AddrSpace.REG and isinstance(val, UOp):
@@ -103,7 +102,8 @@ def lower_range(op, env, effects, sink_effects, buffer_effects, pending_shared, 
   active_ranges = active_ranges + (i,)
   local_updated = set()
   for stmt in op.body:
-    if isinstance(stmt, Range): local_updated |= lower_range(stmt, env, effects, sink_effects, buffer_effects, pending_shared, updated_buffers, indices, range_slots, register_scopes, active_ranges)
+    if isinstance(stmt, Range): local_updated |= lower_range(stmt, env, effects, sink_effects, buffer_effects, pending_shared, 
+                                                             updated_buffers, indices, range_slots, register_scopes, active_ranges)
     elif isinstance(stmt, Store): lower_store(stmt, env, effects, sink_effects, buffer_effects, pending_shared, indices, active_ranges)
     elif isinstance(stmt, Set): lower_set(stmt, env, updated_buffers, local_updated, indices, active_ranges, op.axis, register_scopes)
     elif isinstance(stmt, Barrier): lower_barrier(env, effects, buffer_effects, pending_shared, active_ranges)
