@@ -6,55 +6,40 @@
 
 # tilegrad
 
-`tilegrad` is a TileLang-inspired kernel frontend targeting tinygrad UOps.
+`tilegrad` is a small TileLang-inspired kernel frontend that lowers to tinygrad UOps.
 
-The goal is to make tiled kernels easier to write than raw tinygrad UOps while keeping the compiler path small, inspectable, and hackable.
+The goal is to make tiled GPU kernels easier to write than raw tinygrad custom UOps while keeping the compiler path tiny, inspectable, and hackable.
 
 ```text
-tilegrad frontend -> tilegrad IR -> tinygrad UOps -> tinygrad runtime/codegen/VIZ
+KernelBuilder -> tilegrad IR -> tinygrad UOps -> tinygrad runtime/codegen
 ```
 
-`tilegrad` is early. The project is currently focused on defining a small, correct IR for tiled kernels before growing a larger frontend or chasing performance.
+`tilegrad` is early. It currently focuses on proving a small set of tiled-kernel semantics:
+
+- explicit IR and validation
+- shared memory allocations
+- register accumulators
+- tiled copies
+- barriers
+- reduce loops
+- small GEMM kernels
 
 ## Why
 
-TileLang has a productive programming model for tiled GPU kernels. tinygrad has a compact compiler/runtime stack with visible IR, codegen, debugging, and VIZ.
+`tilegrad` is trying to be to tinygrad what TileLang is to TVM.
 
-`tilegrad` explores the overlap:
+TileLang gives TVM users a productive way to write tiled GPU kernels without manually working at the lowest compiler-IR level. `tilegrad` aims to do the same for tinygrad: provide a small tiled-kernel frontend while still lowering into tinygrad's UOps, runtime, codegen, and debugging tools.
 
-- TileLang-style kernel programming
-- tinygrad as the lowering/runtime backend
-- a small IR with explicit validation
-- a tiny codebase that is easy to read, test, and modify
+The goal is not to replace tinygrad. The goal is to make custom tiled kernels easier to author while preserving tinygrad's inspectable compiler path.
 
-The long-term direction is a small tile-kernel DSL that can express shared-memory tiled programs, matmul-style kernels, and eventually hardware-specific lowering paths while still going through tinygrad.
+## Setup
 
-## Architecture
-
-`tilegrad` keeps its own semantics separate from tinygrad internals.
-
-```text
-tilegrad.ir        pure IR nodes
-tilegrad.validate  IR validation and semantic checks
-tilegrad.lowerer   tinygrad UOp lowering
-examples/          runnable kernels and raw tinygrad references
-tests/             semantic and lowering regression tests
-```
-
-The important boundary is:
-
-```text
-IR and validation do not import tinygrad.
-Only the lowerer depends on tinygrad internals.
-```
-
-This keeps tinygrad churn isolated to the backend boundary.
-
-## Install
-
-The recommended setup is from source with a local tinygrad checkout.
+Clone tilegrad and install it with a local tinygrad checkout:
 
 ```bash
+git clone <tilegrad-repo-url>
+cd tilegrad
+
 python3 -m venv .venv
 source .venv/bin/activate
 
@@ -63,31 +48,71 @@ pip install -e ../tinygrad
 pip install -e ".[dev]"
 ```
 
-## Tests
+Run tests:
 
 ```bash
-python -m pytest tests
+python3 -m pytest tests/
 ```
 
-## Examples
+## Quick Examples
+
+Run a simple IR copy:
 
 ```bash
-python examples/ir_zero.py
-python examples/ir_copy.py
-python examples/ir_shared_copy.py
+python3 examples/ir_copy.py
 ```
 
-Raw tinygrad UOp references:
+Run a shared-memory copy:
 
 ```bash
-python examples/raw_uop_zero.py
-python examples/raw_shared_copy.py
+python3 examples/ir_shared_copy.py
 ```
 
-## tinygrad VIZ
-
-Because tilegrad lowers to normal tinygrad UOps, tinygrad VIZ can inspect generated graphs:
+Run a builder-authored tiled GEMM:
 
 ```bash
-VIZ=1 python examples/ir_shared_copy.py
+python3 examples/builder_tiled_gemm.py
 ```
+
+Expected output:
+
+```text
+[413.0, 434.0, 1061.0, 1118.0]
+```
+
+## Example Kernel
+
+A small tiled GEMM in tilegrad uses shared tiles, a register accumulator, tiled copies, a barrier, and a reduce loop:
+
+```python
+k = KernelBuilder("builder_tiled_gemm", ("out", "a", "b"))
+k.alloc("as", 3, "float32")
+k.alloc("bs", 3, "float32")
+k.alloc("acc", 1, "float32", "register")
+
+with k.range("i", 2):
+  with k.range("j", 2):
+    k.set("acc", 0, 0)
+    with k.range("ko", 2):
+      k.copy("a", "as", shape=(1, 3), stride=6, src_row_off="i", src_col_off=Mul("ko", 3))
+      k.copy("b", "bs", shape=(3,), stride=2, src_row_off=Mul("ko", 3), src_col_off="j")
+      k.barrier()
+      with k.range("kk", 3, axis="reduce"):
+        k.set("acc", 0, Add(k.load("acc", 0), Mul(k.load("as", "kk"), k.load("bs", "kk"))))
+    k.set("out", Index2D("i", "j", 2), k.load("acc", 0))
+```
+
+See `examples/builder_tiled_gemm.py` for the runnable version.
+
+## Debugging
+
+Because tilegrad lowers to tinygrad UOps, tinygrad debugging tools work normally:
+
+```bash
+DEBUG=6 python3 examples/builder_tiled_gemm.py
+VIZ=1 python3 examples/ir_shared_copy.py
+```
+
+## Status
+
+This is experimental. The current priority is correctness and inspectability over performance.
