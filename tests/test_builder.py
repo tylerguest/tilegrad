@@ -270,5 +270,72 @@ class TestBuilder(unittest.TestCase):
     out = out.custom_kernel(a, b, fxn=tiled_gemm_kernel)[0].realize()
     self.assertEqual(out.tolist(), [58.0, 64.0, 139.0, 154.0])
 
+  def test_ir_tiled_gemm_2x6x2_ko2(self):
+    def tiled_gemm_kernel(out, a, b):
+      ir = Kernel(
+        "test_ir_tiled_gemm_2x6x2_ko2",
+        (Arg("out"), Arg("a"), Arg("b")),
+        (
+          Alloc("as", 3, "float32", "shared"),
+          Alloc("bs", 3, "float32", "shared"),
+          Alloc("acc", 1, "float32", "register"),
+          Range("i", 2, (
+            Range("j", 2, (
+              Set("acc", 0, 0),
+              Range("ko", 2, (
+                Range("ki", 3, (
+                  Store("as", "ki", Load("a", Index2D("i", Add(Mul("ko", 3), "ki"), 6))),
+                )),
+                Range("ki", 3, (
+                  Store("bs", "ki", Load("b", Index2D(Add(Mul("ko", 3), "ki"), "j", 2))),
+                )),
+                Barrier(),
+                Range("k", 3, (
+                  Set("acc", 0, Add(Load("acc", 0), Mul(Load("as", "k"), Load("bs", "k")))),
+                ), axis="reduce"),
+              )),
+              Set("out", Index2D("i", "j", 2), Load("acc", 0)),
+            )),
+          )),
+        ),
+      )
+      return lower_kernel(ir, out, a, b)
+    a = Tensor([
+      1.0, 2.0, 3.0, 4.0, 5.0, 6.0,
+      7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
+    ])
+    b = Tensor([
+      13.0, 14.0,
+      15.0, 16.0,
+      17.0, 18.0,
+      19.0, 20.0,
+      21.0, 22.0,
+      23.0, 24.0,
+    ])
+    out = Tensor.empty(4)
+    out = out.custom_kernel(a, b, fxn=tiled_gemm_kernel)[0].realize()
+    self.assertEqual(out.tolist(), [413.0, 434.0, 1061.0, 1118.0])
+  
+  def test_ir_register_accumulates_across_loop(self):
+    def accum_kernel(out):
+      ir = Kernel(
+        "test_ir_register_accumulates_across_loop",
+        (Arg("out"),),
+        (
+          Alloc("acc", 1, "float32", "register"),
+          Set("acc", 0, 0),
+          Range("ko", 2, (
+            Range("k", 3, (
+              Set("acc", 0, Add(Load("acc", 0), 1)),
+            ), axis="reduce"),
+          )),
+          Set("out", 0, Load("acc", 0)),
+        ),
+      )
+      return lower_kernel(ir, out)
+    out = Tensor.empty(1)
+    out = out.custom_kernel(fxn=accum_kernel)[0].realize()
+    self.assertEqual(out.tolist(), [6.0])
+
 if __name__ == "__main__":
   unittest.main()

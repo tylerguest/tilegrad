@@ -16,37 +16,38 @@ def lower_dtype(dtype):
 def lower_index(idx):
   return idx if isinstance(idx, UOp) else UOp.const(dtypes.weakint, idx)
 
-def lower_binary(expr, env, indices, recurrence_buffer, recurrence_range, value_mode, op):
-  lhs = lower_expr(expr.lhs, env, indices, recurrence_buffer, recurrence_range, value_mode)
-  rhs = lower_expr(expr.rhs, env, indices, recurrence_buffer, recurrence_range, value_mode)
+def lower_binary(expr, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode, op):
+  lhs = lower_expr(expr.lhs, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode)
+  rhs = lower_expr(expr.rhs, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode)
   return op(lhs, rhs)
 
-def lower_load(expr, env, indices, recurrence_buffer, recurrence_range, value_mode):
-  idx = lower_expr(expr.index, env, indices, recurrence_buffer, recurrence_range, value_mode)
+def lower_load(expr, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode):
+  idx = lower_expr(expr.index, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode)
   buf = env[expr.buffer]
   if expr.buffer == recurrence_buffer and recurrence_range is not None:
+    if recurrence_uop is not None: buf = recurrence_uop
     buf = buf.after(recurrence_range)
   buf = buf.flatten()
   if value_mode: return buf[idx]
   return buf.index(lower_index(idx)).load()
 
-def lower_expr(expr, env, indices, recurrence_buffer=None, recurrence_range=None, value_mode=False):
+def lower_expr(expr, env, indices, recurrence_buffer=None, recurrence_range=None, recurrence_uop=None, value_mode=False):
   if isinstance(expr, (int, float)): return expr
   if isinstance(expr, str):
     if expr in indices: return indices[expr]
     raise NotImplementedError(expr)
   if isinstance(expr, Const): return expr.value
-  if isinstance(expr, Add): return lower_binary(expr, env, indices, recurrence_buffer, recurrence_range, value_mode, lambda lhs, rhs: lhs + rhs)
-  if isinstance(expr, Sub): return lower_binary(expr, env, indices, recurrence_buffer, recurrence_range, value_mode, lambda lhs, rhs: lhs - rhs)
-  if isinstance(expr, Mul): return lower_binary(expr, env, indices, recurrence_buffer, recurrence_range, value_mode, lambda lhs, rhs: lhs * rhs)
-  if isinstance(expr, FloorDiv): return lower_binary(expr, env, indices, recurrence_buffer, recurrence_range, value_mode, lambda lhs, rhs: lhs // rhs)
-  if isinstance(expr, Mod): return lower_binary(expr, env, indices, recurrence_buffer, recurrence_range, value_mode, lambda lhs, rhs: lhs % rhs)
+  if isinstance(expr, Add): return lower_binary(expr, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode, lambda lhs, rhs: lhs + rhs)
+  if isinstance(expr, Sub): return lower_binary(expr, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode, lambda lhs, rhs: lhs - rhs)
+  if isinstance(expr, Mul): return lower_binary(expr, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode, lambda lhs, rhs: lhs * rhs)
+  if isinstance(expr, FloorDiv): return lower_binary(expr, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode, lambda lhs, rhs: lhs // rhs)
+  if isinstance(expr, Mod): return lower_binary(expr, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode, lambda lhs, rhs: lhs % rhs)
   if isinstance(expr, Index2D):
-    row = lower_expr(expr.row, env, indices, recurrence_buffer, recurrence_range, value_mode)
-    col = lower_expr(expr.col, env, indices, recurrence_buffer, recurrence_range, value_mode)
-    stride = lower_expr(expr.stride, env, indices, recurrence_buffer, recurrence_range, value_mode)
+    row = lower_expr(expr.row, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode)
+    col = lower_expr(expr.col, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode)
+    stride = lower_expr(expr.stride, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode)
     return row * stride + col
-  if isinstance(expr, Load): return lower_load(expr, env, indices, recurrence_buffer, recurrence_range, value_mode)
+  if isinstance(expr, Load): return lower_load(expr, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode)
   raise NotImplementedError(type(expr).__name__)
 
 def lower_store(stmt, env, effects, sink_effects, buffer_effects, pending_shared, indices, active_ranges):
@@ -67,18 +68,34 @@ def lower_store(stmt, env, effects, sink_effects, buffer_effects, pending_shared
     sink_effects.append(ended)
     env[stmt.buffer] = base.after(ended)
 
-def lower_set(stmt, env, updated_buffers, local_updated, indices, active_ranges, axis):
+def lower_set(stmt, env, updated_buffers, local_updated, indices, active_ranges, axis, register_scopes):
   idx = lower_expr(stmt.index, env, indices)
   recurrence_range = active_ranges[-1] if axis == "reduce" and active_ranges else None
-  val = lower_expr(stmt.value, env, indices, recurrence_buffer=stmt.buffer, recurrence_range=recurrence_range, value_mode=True,)
   buf = env[stmt.buffer]
-  if axis != "reduce" and active_ranges and buf.addrspace is AddrSpace.REG: buf = buf.after(*active_ranges)
+  recurrence_uop = None
+  register_end_ranges = ()
+  if buf.addrspace is AddrSpace.REG:
+    desired_scope = active_ranges[:-1] if axis == "reduce" else active_ranges
+    current_scope = register_scopes.get(stmt.buffer, ())
+    if desired_scope[:len(current_scope)] != current_scope: raise RuntimeError("register scope mismatch")
+    register_end_ranges = desired_scope[len(current_scope):]
+    if register_end_ranges: buf = buf.after(*register_end_ranges)
+    register_scopes[stmt.buffer] = desired_scope
+    recurrence_uop = buf
+  val = lower_expr(
+    stmt.value, env, indices, recurrence_buffer=stmt.buffer,
+    recurrence_range=recurrence_range, recurrence_uop=recurrence_uop, value_mode=True,
+  )
   target = buf.flatten()[idx]
-  env[stmt.buffer] = target.set(val, end=recurrence_range) if axis == "reduce" else target.set(val)
+  next_buf = target.set(val, end=(recurrence_range, *register_end_ranges)) if axis == "reduce" else target.set(val)
+  if buf.addrspace is not AddrSpace.REG and isinstance(val, UOp):
+    leaked_ranges = [r for r in val.ranges if r not in active_ranges]
+    if leaked_ranges: next_buf = next_buf.end(*leaked_ranges)
+  env[stmt.buffer] = next_buf
   updated_buffers.add(stmt.buffer)
   local_updated.add(stmt.buffer)
 
-def lower_range(op, env, effects, sink_effects, buffer_effects, pending_shared, updated_buffers, indices, range_slots, active_ranges=()):
+def lower_range(op, env, effects, sink_effects, buffer_effects, pending_shared, updated_buffers, indices, range_slots, register_scopes, active_ranges=()):
   axis_type = AxisType.REDUCE if op.axis == "reduce" else AxisType.LOOP
   i = UOp.range(lower_shape(op.extent, env), range_slots[0], axis_type)
   range_slots[0] += 1
@@ -86,19 +103,14 @@ def lower_range(op, env, effects, sink_effects, buffer_effects, pending_shared, 
   active_ranges = active_ranges + (i,)
   local_updated = set()
   for stmt in op.body:
-    if isinstance(stmt, Range): local_updated |= lower_range(stmt, env, effects, sink_effects, buffer_effects, pending_shared, updated_buffers, indices, range_slots, active_ranges)
+    if isinstance(stmt, Range): local_updated |= lower_range(stmt, env, effects, sink_effects, buffer_effects, pending_shared, updated_buffers, indices, range_slots, register_scopes, active_ranges)
     elif isinstance(stmt, Store): lower_store(stmt, env, effects, sink_effects, buffer_effects, pending_shared, indices, active_ranges)
-    elif isinstance(stmt, Set): lower_set(stmt, env, updated_buffers, local_updated, indices, active_ranges, op.axis)
+    elif isinstance(stmt, Set): lower_set(stmt, env, updated_buffers, local_updated, indices, active_ranges, op.axis, register_scopes)
     elif isinstance(stmt, Barrier): lower_barrier(env, effects, buffer_effects, pending_shared, active_ranges)
     else: raise NotImplementedError(type(stmt).__name__)
   if op.axis == "loop":
     for name in local_updated:
-      if name in env:
-        if env[name].addrspace is AddrSpace.REG:
-          target = env[name].flatten()[0]
-          env[name] = target.set(target, end=i)
-        else:
-          env[name] = env[name].end(i)
+      if name in env and env[name].addrspace is not AddrSpace.REG: env[name] = env[name].end(i)
   return local_updated
 
 def lower_alloc(op, env, shared_slots, register_slots):
@@ -149,10 +161,11 @@ def lower_kernel(kernel, *args: UOp) -> UOp:
   shared_slots = [0]
   register_slots = [0]
   range_slots = [0]
+  register_scopes = {}
   for op in kernel.body:
     if isinstance(op, Alloc): lower_alloc(op, env, shared_slots, register_slots)
-    elif isinstance(op, Set): lower_set(op, env, updated_buffers, set(), indices, (), "loop")
-    elif isinstance(op, Range): lower_range(op, env, effects, sink_effects, buffer_effects, pending_shared, updated_buffers, indices, range_slots)
+    elif isinstance(op, Set): lower_set(op, env, updated_buffers, set(), indices, (), "loop", register_scopes)
+    elif isinstance(op, Range): lower_range(op, env, effects, sink_effects, buffer_effects, pending_shared, updated_buffers, indices, range_slots, register_scopes)
     elif isinstance(op, Barrier): lower_barrier(env, effects, buffer_effects, pending_shared)
     else: raise NotImplementedError(type(op).__name__)
   if pending_shared:
