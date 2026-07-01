@@ -1,5 +1,5 @@
 import unittest
-from tilegrad.ir import Add, Arg, Barrier, Const, Kernel, Load, Range, Set, Store
+from tilegrad.ir import Add, Arg, Barrier, Const, Kernel, Load, Range, Set, Store, Var
 from tilegrad.validate import validate_kernel
 
 class TestValidate(unittest.TestCase):
@@ -102,6 +102,14 @@ class TestValidate(unittest.TestCase):
       (Range("i", 2, (Store("out", "i", 0),), axis="bad"),),
     )
     with self.assertRaisesRegex(ValueError, "unknown range axis: bad"): validate_kernel(kernel)
+  
+  def test_validate_accepts_var_indicies(self):
+    k = Kernel(
+      "copy",
+      (Arg("out"), Arg("inp")),
+      (Range("i", 4, (Set("out", Var("i"), Load("inp", Var("i"))),)),),
+    )
+    validate_kernel(k)
 
 if __name__ == "__main__":
   unittest.main()

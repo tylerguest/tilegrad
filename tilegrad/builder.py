@@ -1,4 +1,22 @@
-from tilegrad.ir import Add, Alloc, Arg, Barrier, Index2D, Kernel, Load, Range, Set, Store
+from tilegrad.ir import Add, Alloc, Arg, Barrier, Index2D, Kernel, Load, Range, Set, Store, Var
+
+class BufferRef:
+  def __init__(self, builder, name, shape=None):
+    self.builder = builder
+    self.name = name
+    self.shape = shape
+  
+  def _index(self, index):
+    if isinstance(index, tuple):
+      if len(index) != 2: raise NotImplementedError(f"{len(index)}D indexing")
+      if self.shape is None: raise ValueError("2D indexing requires shape")
+      return Index2D(index[0], index[1], self.shape[1])
+    return index
+  
+  def __getitem__(self, index): return Load(self.name, self._index(index))
+  def __setitem__(self, index, value): self.builder.set(self.name, self._index(index), value)
+
+def _buffer_name(x): return x.name if isinstance(x, BufferRef) else x
 
 class KernelBuilder:
   def __init__(self, name, args):
@@ -7,26 +25,35 @@ class KernelBuilder:
     self._body = []
     self._range_stack = []
     self._copy_counter = 0
+    self._parallel_counter = 0
 
   def _current_body(self): return self._range_stack[-1] if self._range_stack else self._body 
+
+  def parallel(self, *extents): return _ParallelContext(self, extents)
+
+  def buffer(self, name, shape=None): return BufferRef(self, name, shape)
+
+  def buffers(self, *names): return tuple(self.buffer(name) for name in names)
   
-  def load(self, buffer, index): return Load(buffer, index)
+  def load(self, buffer, index): return Load(_buffer_name(buffer), index)
 
-  def set(self, buffer, index, value): self._current_body().append(Set(buffer, index, value))
-
+  def set(self, buffer, index, value): self._current_body().append(Set(_buffer_name(buffer), index, value))
+  
   def store(self, buffer, index, value):
     if not self._range_stack: raise ValueError("store requires an active range")
-    self._current_body().append(Store(buffer, index, value))
-  
+    self._current_body().append(Store(_buffer_name(buffer), index, value))
+
   def alloc(self, name, shape, dtype, space="shared"):
     if self._range_stack: raise ValueError("alloc must be top-level")
-    self._body.append(Alloc(name, shape, dtype, space))
-  
+    self._body.append(Alloc(_buffer_name(name), shape, dtype, space))
+
   def barrier(self): self._current_body().append(Barrier())
   
   def range(self, name, extent, axis="loop"): return _RangeContext(self, name, extent, axis)
 
   def copy(self, src, dst, shape, stride=None, src_row_off=0, src_col_off=0):
+    src = _buffer_name(src)
+    dst = _buffer_name(dst)
     n = self._copy_counter
     self._copy_counter += 1
     body = self._current_body()
@@ -60,9 +87,31 @@ class _RangeContext:
 
   def __enter__(self):
     self.builder._range_stack.append([])
-    return self
+    return Var(self.name)
   
   def __exit__(self, exc_type, exc, tb):
     body = self.builder._range_stack.pop()
     if exc_type is None: self.builder._current_body().append(Range(self.name, self.extent, tuple(body), self.axis))
+    return False
+
+class _ParallelContext:
+  def __init__(self, builder, extents):
+    self.builder = builder
+    self.extents = extents
+    self.names = None
+  
+  def __enter__(self):
+    n = self.builder._parallel_counter
+    self.builder._parallel_counter += 1
+    self.names = tuple(f"_p{n}_i{i}" for i in range(len(self.extents)))
+    self.builder._range_stack.append([])
+    vars = tuple(Var(name) for name in self.names)
+    return vars[0] if len(vars) == 1 else vars
+  
+  def __exit__(self, exc_type, exc, tb):
+    body = tuple(self.builder._range_stack.pop())
+    if exc_type is None:
+      for name, extent in reversed(tuple(zip(self.names, self.extents))):
+        body = (Range(name, extent, body),)
+      self.builder._current_body().extend(body)
     return False

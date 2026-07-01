@@ -1,6 +1,17 @@
 from dataclasses import dataclass
 
-class Expr: pass
+class Expr:
+  def __add__(self, other): return Add(self, other)
+  def __radd__(self, other): return Add(other, self)
+  def __sub__(self, other): return Sub(self, other)
+  def __rsub__(self, other): return Sub(other, self)
+  def __mul__(self, other): return Mul(self, other)
+  def __rmul__(self, other): return Mul(other, self)
+  def __floordiv__(self, other): return FloorDiv(self, other)
+  def __rfloordiv__(self, other): return FloorDiv(other, self)
+  def __mod__(self, other): return Mod(self, other)
+  def __rmod__(self, other): return Mod(other, self)
+
 class Stmt: pass
 class KernelOp: pass
 
@@ -11,6 +22,10 @@ class Arg:
 @dataclass(frozen=True)
 class Const(Expr):
   value: int | float
+
+@dataclass(frozen=True)
+class Var(Expr):
+  name: str
 
 @dataclass(frozen=True)
 class BinaryExpr(Expr):
@@ -78,6 +93,7 @@ class Kernel:
   args: tuple[Arg, ...]
   body: tuple
 
+def var(name:str): return Var(name)
 def add(lhs:object, rhs:object): return Add(lhs, rhs)
 def sub(lhs:object, rhs:object): return Sub(lhs, rhs)
 def mul(lhs:object, rhs:object): return Mul(lhs, rhs)

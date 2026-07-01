@@ -1,7 +1,7 @@
 import unittest
 from tinygrad import Tensor
 from tilegrad.builder import KernelBuilder
-from tilegrad.ir import Add, Alloc, Arg, Barrier, Index2D, Kernel, Load, Mul, Range, Set, Store
+from tilegrad.ir import Add, Alloc, Arg, Barrier, Index2D, Kernel, Load, Mul, Range, Set, Store, Var
 from tilegrad.lowerer import lower_kernel
 
 class TestBuilder(unittest.TestCase):
@@ -440,6 +440,84 @@ class TestBuilder(unittest.TestCase):
     out = Tensor.empty(1)
     out = out.custom_kernel(fxn=accum_kernel)[0].realize()
     self.assertEqual(out.tolist(), [6.0])
+
+  def test_range_returns_var(self):
+    k = KernelBuilder("copy", ("out", "inp"))
+    out = k.buffer("out")
+    inp = k.buffer("inp")
+    with k.range("i", 4) as i:
+      out[i] = inp[i]
+    kernel = k.build()
+    assert kernel.body == (
+      Range("i", 4, (
+        Set("out", Var("i"), Load("inp", Var("i"))),
+      )),
+    )
+  
+  def test_buffer_ref_2d_indexing(self):
+    k = KernelBuilder("copy2d", ("out", "inp"))
+    out = k.buffer("out", shape=(2, 3))
+    inp = k.buffer("inp", shape=(2, 3))
+    with k.range("i", 2) as i:
+      with k.range("j", 3) as j:
+        out[i, j] = inp[i, j]
+    kernel = k.build()
+    assert kernel.body == (
+      Range("i", 2, (
+        Range("j", 3, (
+          Set("out", Index2D(Var("i"), Var("j"), 3), Load("inp", Index2D(Var("i"), Var("j"), 3))),
+        )),
+      )),
+    )
+  
+  def test_var_operator_expressions(self):
+    i = Var("i")
+    j = Var("j")
+    assert i * 4 + j == Add(Mul(i, 4), j)
+
+  def test_parallel_2d_buffer_refs(self):
+    k = KernelBuilder("vecadd_2d", ("out", "a", "b"))
+    out = k.buffer("out", shape=(2, 2))
+    a = k.buffer("a", shape=(2, 2))
+    b = k.buffer("b", shape=(2, 2))
+    with k.parallel(2, 2) as (i, j):
+      out[i, j] = a[i, j] + b[i, j]
+    self.assertEqual(k.build().body, (
+      Range("_p0_i0", 2, (
+        Range("_p0_i1", 2, (
+          Set(
+            "out",
+            Index2D(Var("_p0_i0"), Var("_p0_i1"), 2),
+            Add(
+              Load("a", Index2D(Var("_p0_i0"), Var("_p0_i1"), 2)),
+              Load("b", Index2D(Var("_p0_i0"), Var("_p0_i1"), 2)),
+            ),
+          ),
+        )),
+      )),
+    ))
+  
+  def test_builder_methods_accept_buffer_refs(self):
+    k = KernelBuilder("copy", ("out", "inp"))
+    out = k.buffer("out")
+    inp = k.buffer("inp")
+    with k.range("i", 4) as i: k.set(out, i, k.load(inp, i))
+    self.assertEqual(k.build().body, (
+      Range("i", 4, (
+        Set("out", Var("i"), Load("inp", Var("i"))),
+      )),
+    ))
+
+  def test_copy_accepts_buffer_refs(self):
+    k = KernelBuilder("copy", ("out", "inp"))
+    out = k.buffer("out")
+    inp = k.buffer("inp")
+    k.copy(inp, out, shape=(4,))
+    self.assertEqual(k.build().body, (
+      Range("_c0_i0", 4, (
+        Store("out", "_c0_i0", Load("inp", "_c0_i0")),
+      )),
+    ))
 
 if __name__ == "__main__":
   unittest.main()

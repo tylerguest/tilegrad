@@ -1,6 +1,6 @@
 from tinygrad.dtype import AddrSpace, dtypes
 from tinygrad.uop.ops import AxisType, KernelInfo, UOp
-from tilegrad.ir import Add, Alloc, Barrier, Const, FloorDiv, Index2D, Load, Mod, Mul, Range, Set, Store, Sub
+from tilegrad.ir import Add, Alloc, Barrier, Const, FloorDiv, Index2D, Load, Mod, Mul, Range, Set, Store, Sub, Var
 from tilegrad.validate import validate_kernel
 
 def lower_shape(shape, env):
@@ -36,6 +36,9 @@ def lower_expr(expr, env, indices, recurrence_buffer=None, recurrence_range=None
   if isinstance(expr, str):
     if expr in indices: return indices[expr]
     raise NotImplementedError(expr)
+  if isinstance(expr, Var): 
+    if expr.name in indices: return indices[expr.name]
+    raise NotImplementedError(expr.name)
   if isinstance(expr, Const): return expr.value
   if isinstance(expr, Add): return lower_binary(expr, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode, lambda lhs, rhs: lhs + rhs)
   if isinstance(expr, Sub): return lower_binary(expr, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode, lambda lhs, rhs: lhs - rhs)
