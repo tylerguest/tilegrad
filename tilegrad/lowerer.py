@@ -170,7 +170,17 @@ def lower_range(op, env, effects, sink_effects, buffer_effects, pending_shared, 
     else: raise NotImplementedError(type(stmt).__name__)
   if op.axis == "loop":
     for name in local_updated:
-      if name in env and env[name].addrspace is not AddrSpace.REG: env[name] = env[name].end(i)
+      if name not in env: continue
+      buf = env[name]
+      if buf.addrspace is AddrSpace.REG:
+        scope = register_scopes.get(name, ())
+        if scope and scope[-1] is i:
+          if i in buf.ranges:
+            target = buf.flatten()[0]
+            env[name] = target.set(target, end=i)
+          register_scopes[name] = scope[:-1]
+      else:
+        env[name] = buf.end(i)
   return local_updated
 
 def lower_alloc(op, env, shared_slots, register_slots):
