@@ -70,6 +70,28 @@ class TestRuntime(unittest.TestCase):
     out_t = Tensor.empty(2)
     self.assertEqual(run(k, out_t, inp_t).tolist(), [6.0, 15.0])
 
+  def test_run_copy_3d(self):
+    k = KernelBuilder("copy_3d", ("out", "inp"))
+    out = k.buffer("out", shape=(2, 2, 3))
+    inp = k.buffer("inp", shape=(2, 2, 3))
+    with k.range("b", 2) as b:
+      with k.range("i", 2) as i:
+        with k.range("j", 3) as j:
+          out[b, i, j] = inp[b, i, j]
+    inp_t = Tensor([
+      1.0, 2.0, 3.0,
+      4.0, 5.0, 6.0,
+      7.0, 8.0, 9.0,
+      10.0, 11.0, 12.0,
+    ])
+    out_t = Tensor.empty(12)
+    self.assertEqual(run(k, out_t, inp_t).tolist(), [
+      1.0, 2.0, 3.0,
+      4.0, 5.0, 6.0,
+      7.0, 8.0, 9.0,
+      10.0, 11.0, 12.0,
+    ])
+
   def test_run_guarded_vecadd_2d(self):
     k = KernelBuilder("guarded_vecadd_2d", ("out", "a", "b"))
     out_ref = k.buffer("out", shape=(3, 2))

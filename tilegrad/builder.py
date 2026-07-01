@@ -1,4 +1,4 @@
-from tilegrad.ir import Add, Alloc, Arg, Barrier, Index2D, Kernel, Load, Range, Set, SetIf, Store, StoreIf, Var
+from tilegrad.ir import Add, Alloc, Arg, Barrier, Index2D, Kernel, Load, Mul, Range, Set, SetIf, Store, StoreIf, Var
 
 class BufferRef:
   def __init__(self, builder, name, shape=None):
@@ -7,17 +7,28 @@ class BufferRef:
     self.shape = shape
   
   def _index(self, index):
-    if isinstance(index, tuple):
-      if len(index) != 2: raise NotImplementedError(f"{len(index)}D indexing")
-      if self.shape is None: raise ValueError("2D indexing requires shape")
-      return Index2D(index[0], index[1], self.shape[1])
-    return index
+    if not isinstance(index, tuple): return index
+    if self.shape is None: raise ValueError("tuple indexing requires shape")
+    return _flatten_nd_index(index, self.shape)
   
   def __getitem__(self, index): return Load(self.name, self._index(index))
   def __setitem__(self, index, value): self.builder.set(self.name, self._index(index), value)
 
 def _buffer_name(x): return x.name if isinstance(x, BufferRef) else x
 def _buffer_index(buffer, index): return buffer._index(index) if isinstance(buffer, BufferRef) else index
+
+def _flatten_nd_index(indices, shape):
+  if len(indices) != len(shape): raise ValueError(f"{len(indices)}D index does not match {len(shape)}D shape")
+  if len(indices) == 1: return indices[0]
+  if len(indices) == 2: return Index2D(indices[0], indices[1], shape[1])
+  if not all(isinstance(dim, int) for dim in shape):
+    raise TypeError("N-D tuple indexing requires integer buffer shapes")
+  flat = indices[-1]
+  stride = 1
+  for idx, dim in zip(reversed(indices[:-1]), reversed(shape[1:])):
+    stride *= dim
+    flat = Add(Mul(idx, stride), flat)
+  return flat
 
 class KernelBuilder:
   def __init__(self, name, args):
@@ -36,16 +47,16 @@ class KernelBuilder:
 
   def buffers(self, *names): return tuple(self.buffer(name) for name in names)
   
-  def load(self, buffer, index): return Load(_buffer_name(buffer), index)
+  def load(self, buffer, index): return Load(_buffer_name(buffer), _buffer_index(buffer, index))
 
-  def set(self, buffer, index, value): self._current_body().append(Set(_buffer_name(buffer), index, value))
+  def set(self, buffer, index, value): self._current_body().append(Set(_buffer_name(buffer), _buffer_index(buffer, index), value))
 
   def set_if(self, cond, buffer, index, value):
     self._current_body().append(SetIf(cond, _buffer_name(buffer), _buffer_index(buffer, index), value))
 
   def store(self, buffer, index, value):
     if not self._range_stack: raise ValueError("store requires an active range")
-    self._current_body().append(Store(_buffer_name(buffer), index, value))
+    self._current_body().append(Store(_buffer_name(buffer), _buffer_index(buffer, index), value))
   
   def store_if(self, cond, buffer, index, value):
     if not self._range_stack: raise ValueError("store_if requires an active range")

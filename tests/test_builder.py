@@ -470,6 +470,68 @@ class TestBuilder(unittest.TestCase):
       )),
     )
   
+  def test_buffer_ref_3d_indexing(self):
+    k = KernelBuilder("copy3d", ("out", "inp"))
+    out = k.buffer("out", shape=(2, 3, 4))
+    inp = k.buffer("inp", shape=(2, 3, 4))
+    with k.range("b", 2) as b:
+      with k.range("i", 3) as i:
+        with k.range("j", 4) as j:
+          out[b, i, j] = inp[b, i, j]
+    flat = Add(Mul(Var("b"), 12), Add(Mul(Var("i"), 4), Var("j")))
+    self.assertEqual(k.build().body, (
+      Range("b", 2, (
+        Range("i", 3, (
+          Range("j", 4, (
+            Set("out", flat, Load("inp", flat)),
+          )),
+        )),
+      )),
+    ))
+
+  def test_builder_methods_accept_3d_buffer_refs(self):
+    k = KernelBuilder("copy3d_methods", ("out", "inp"))
+    out = k.buffer("out", shape=(2, 3, 4))
+    inp = k.buffer("inp", shape=(2, 3, 4))
+    with k.range("b", 2) as b:
+      with k.range("i", 3) as i:
+        with k.range("j", 4) as j:
+          k.set(out, (b, i, j), k.load(inp, (b, i, j)))
+    flat = Add(Mul(Var("b"), 12), Add(Mul(Var("i"), 4), Var("j")))
+    self.assertEqual(k.build().body, (
+      Range("b", 2, (
+        Range("i", 3, (
+          Range("j", 4, (
+            Set("out", flat, Load("inp", flat)),
+          )),
+        )),
+      )),
+    ))
+
+  def test_tuple_indexing_requires_shape(self):
+    k = KernelBuilder("bad", ("out",))
+    out = k.buffer("out")
+    with self.assertRaisesRegex(ValueError, "tuple indexing requires shape"):
+      _ = out[0, 0]
+
+  def test_tuple_index_rank_mismatch_fails(self):
+    k = KernelBuilder("bad_rank", ("out",))
+    out = k.buffer("out", shape=(2, 3, 4))
+    with self.assertRaisesRegex(ValueError, "2D index does not match 3D shape"):
+      _ = out[0, 0]
+
+  def test_buffer_ref_1d_tuple_indexing(self):
+    k = KernelBuilder("copy1d_tuple", ("out", "inp"))
+    out = k.buffer("out", shape=(4,))
+    inp = k.buffer("inp", shape=(4,))
+    with k.range("i", 4) as i:
+      out[(i,)] = inp[(i,)]
+    self.assertEqual(k.build().body, (
+      Range("i", 4, (
+        Set("out", Var("i"), Load("inp", Var("i"))),
+      )),
+    ))
+
   def test_var_operator_expressions(self):
     i = Var("i")
     j = Var("j")
