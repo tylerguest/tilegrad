@@ -577,5 +577,7 @@ class TestLowerer(unittest.TestCase):
     out = out.custom_kernel(a, b, fxn=gemm_kernel)[0].realize()
     self.assertEqual(out.tolist(), [58.0, 64.0, 139.0, 154.0])
 
+
+
 if __name__ == "__main__":
   unittest.main()

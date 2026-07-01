@@ -1,7 +1,7 @@
 import unittest
 from tinygrad import Tensor
 from tilegrad.builder import KernelBuilder
-from tilegrad.ir import Add, Alloc, Arg, Barrier, Index2D, Kernel, Load, Mul, Range, Set, Store, Var
+from tilegrad.ir import Add, Alloc, Arg, Barrier, Index2D, Kernel, Load, Mul, Range, Set, Store, Var, And, Lt, StoreIf
 from tilegrad.lowerer import lower_kernel
 
 class TestBuilder(unittest.TestCase):
@@ -518,6 +518,44 @@ class TestBuilder(unittest.TestCase):
         Store("out", "_c0_i0", Load("inp", "_c0_i0")),
       )),
     ))
+
+  def test_store_if_masked_copy_kernel(self):
+    def copy_kernel(out, inp):
+      k = KernelBuilder("store_if_masked_copy", ("out", "inp"))
+      out_ref = k.buffer("out")
+      inp_ref = k.buffer("inp")
+      with k.range("i", 4) as i: k.store_if(i < 3, out_ref, i, inp_ref[i])
+      return lower_kernel(k.build(), out, inp)
+    inp = Tensor([1.0, 2.0, 3.0, 4.0])
+    out = Tensor([0.0, 0.0, 0.0, 9.0])
+    out = out.custom_kernel(inp, fxn=copy_kernel)[0].realize()
+    self.assertEqual(out.tolist(), [1.0, 2.0, 3.0, 9.0])
+
+  def test_store_if_masks_out_of_bounds_store(self):
+    def copy_kernel(out, inp):
+      k = KernelBuilder("store_if_oob_masked_copy", ("out", "inp"))
+      out_ref = k.buffer("out")
+      inp_ref = k.buffer("inp")
+      with k.range("i", 5) as i: k.store_if(i < 4, out_ref, i, inp_ref[i])
+      return lower_kernel(k.build(), out, inp)
+    inp = Tensor([1.0, 2.0, 3.0, 4.0, 99.0])
+    out = Tensor.empty(4)
+    out = out.custom_kernel(inp, fxn=copy_kernel)[0].realize()
+    self.assertEqual(out.tolist(), [1.0, 2.0, 3.0, 4.0])
+
+  def test_store_if_2d_edge_tile_vecadd_kernel(self):
+    def vecadd_kernel(out, a, b):
+      k = KernelBuilder("store_if_2d_edge_tile_vecadd", ("out", "a", "b"))
+      out_ref = k.buffer("out", shape=(3, 2))
+      a_ref = k.buffer("a", shape=(3, 2))
+      b_ref = k.buffer("b", shape=(3, 2))
+      with k.parallel(4, 4) as (i, j): k.store_if((i < 3) & (j < 2), out_ref, (i, j), a_ref[i, j] + b_ref[i, j])
+      return lower_kernel(k.build(), out, a, b)
+    a = Tensor([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+    b = Tensor([10.0, 20.0, 30.0, 40.0, 50.0, 60.0])
+    out = Tensor.empty(6)
+    out = out.custom_kernel(a, b, fxn=vecadd_kernel)[0].realize()
+    self.assertEqual(out.tolist(), [11.0, 22.0, 33.0, 44.0, 55.0, 66.0])
 
 if __name__ == "__main__":
   unittest.main()

@@ -1,6 +1,6 @@
-from tinygrad.dtype import AddrSpace, dtypes
+from tinygrad.dtype import AddrSpace, Invalid, dtypes
 from tinygrad.uop.ops import AxisType, KernelInfo, UOp
-from tilegrad.ir import Add, Alloc, Barrier, Const, FloorDiv, Index2D, Load, Mod, Mul, Range, Set, Store, Sub, Var
+from tilegrad.ir import Add, Alloc, And, Barrier, Const, Eq, FloorDiv, Ge, Gt, Index2D, Le, Load, Lt, Mod, Mul, Ne, Not, Or, Range, Set, Store, StoreIf, Sub, Var
 from tilegrad.validate import validate_kernel
 
 def lower_shape(shape, env):
@@ -45,6 +45,19 @@ def lower_expr(expr, env, indices, recurrence_buffer=None, recurrence_range=None
   if isinstance(expr, Mul): return lower_binary(expr, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode, lambda lhs, rhs: lhs * rhs)
   if isinstance(expr, FloorDiv): return lower_binary(expr, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode, lambda lhs, rhs: lhs // rhs)
   if isinstance(expr, Mod): return lower_binary(expr, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode, lambda lhs, rhs: lhs % rhs)
+  
+  if isinstance(expr, Lt): return lower_binary(expr, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode, lambda lhs, rhs: lhs < rhs)
+  if isinstance(expr, Le): return lower_binary(expr, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode, lambda lhs, rhs: (rhs < lhs).logical_not())
+  if isinstance(expr, Gt): return lower_binary(expr, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode, lambda lhs, rhs: rhs < lhs)
+  if isinstance(expr, Ge): return lower_binary(expr, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode, lambda lhs, rhs: (lhs < rhs).logical_not())
+  if isinstance(expr, Eq): return lower_binary(expr, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode, lambda lhs, rhs: lhs.eq(rhs))
+  if isinstance(expr, Ne): return lower_binary(expr, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode, lambda lhs, rhs: lhs.ne(rhs))
+  if isinstance(expr, And): return lower_binary(expr, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode, lambda lhs, rhs: lhs & rhs)
+  if isinstance(expr, Or): return lower_binary(expr, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode, lambda lhs, rhs: lhs | rhs)
+  if isinstance(expr, Not):
+    x = lower_expr(expr.x, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode)
+    return x.logical_not()
+
   if isinstance(expr, Index2D):
     row = lower_expr(expr.row, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode)
     col = lower_expr(expr.col, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode)
@@ -52,6 +65,27 @@ def lower_expr(expr, env, indices, recurrence_buffer=None, recurrence_range=None
     return row * stride + col
   if isinstance(expr, Load): return lower_load(expr, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode)
   raise NotImplementedError(type(expr).__name__)
+
+def lower_store_if(stmt, env, effects, sink_effects, buffer_effects, pending_shared, indices, active_ranges):
+  cond = lower_expr(stmt.cond, env, indices)
+  idx = lower_expr(stmt.index, env, indices)
+  val = lower_expr(stmt.value, env, indices)
+  base = env[stmt.buffer]
+  buf = base.flatten()
+  if stmt.buffer in buffer_effects: buf = buf.after(buffer_effects[stmt.buffer])
+  if isinstance(val, UOp) and val.dtype != base.dtype.base: val = val.cast(base.dtype.base)
+  idx = lower_index(idx)
+  guarded_idx = cond.where(idx, idx.const_like(Invalid))
+  effect = buf.index(guarded_idx, ptr=True).store(val)
+  if base.addrspace is AddrSpace.LOCAL:
+    buffer_effects[stmt.buffer] = effect
+    pending_shared.append((effect, active_ranges))
+  else:
+    ended = effect.end(*active_ranges)
+    buffer_effects[stmt.buffer] = ended
+    effects.append(ended)
+    sink_effects.append(ended)
+    env[stmt.buffer] = base.after(ended)
 
 def lower_store(stmt, env, effects, sink_effects, buffer_effects, pending_shared, indices, active_ranges):
   idx = lower_expr(stmt.index, env, indices)
@@ -108,6 +142,7 @@ def lower_range(op, env, effects, sink_effects, buffer_effects, pending_shared, 
     if isinstance(stmt, Range): local_updated |= lower_range(stmt, env, effects, sink_effects, buffer_effects, pending_shared, 
                                                              updated_buffers, indices, range_slots, register_scopes, active_ranges)
     elif isinstance(stmt, Store): lower_store(stmt, env, effects, sink_effects, buffer_effects, pending_shared, indices, active_ranges)
+    elif isinstance(stmt, StoreIf): lower_store_if(stmt, env, effects, sink_effects, buffer_effects, pending_shared, indices, active_ranges)
     elif isinstance(stmt, Set): lower_set(stmt, env, updated_buffers, local_updated, indices, active_ranges, op.axis, register_scopes)
     elif isinstance(stmt, Barrier): lower_barrier(env, effects, buffer_effects, pending_shared, active_ranges)
     else: raise NotImplementedError(type(stmt).__name__)

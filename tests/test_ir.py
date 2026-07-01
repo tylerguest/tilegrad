@@ -1,5 +1,5 @@
 import unittest
-from tilegrad.ir import Add, Alloc, Arg, Barrier, Const, FloorDiv, Kernel, Load, Mod, Mul, Range, Store, BinaryExpr, Expr, KernelOp, Stmt, Set, Sub, Index2D
+from tilegrad.ir import Add, Alloc, And, Arg, Barrier, Const, FloorDiv, Kernel, Load, Lt, Mod, Mul, Range, Store, BinaryExpr, Expr, KernelOp, Stmt, Set, Sub, Index2D, Var, and_, lt
 
 class TestIR(unittest.TestCase):
   def test_arg(self):
@@ -107,6 +107,15 @@ class TestIR(unittest.TestCase):
     self.assertEqual(stmt.buffer, "out")
     self.assertEqual(stmt.index, 0)
     self.assertEqual(stmt.value, 1)
+
+  def test_predicate_helpers(self):
+    self.assertEqual(lt(Var("i"), 4), Lt(Var("i"), 4))
+    self.assertEqual(and_(lt(Var("i"), 4), lt(Var("j"), 3)), And(Lt(Var("i"), 4), Lt(Var("j"), 3)))
+
+  def test_predicate_operators(self):
+    i = Var("i")
+    j = Var("j")
+    self.assertEqual((i < 4) & (j < 3), And(Lt(i, 4), Lt(j, 3)))
 
 if __name__ == "__main__":
   unittest.main()

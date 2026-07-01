@@ -1,4 +1,4 @@
-from tilegrad.ir import Add, Alloc, Arg, Barrier, Index2D, Kernel, Load, Range, Set, Store, Var
+from tilegrad.ir import Add, Alloc, Arg, Barrier, Index2D, Kernel, Load, Range, Set, Store, StoreIf, Var
 
 class BufferRef:
   def __init__(self, builder, name, shape=None):
@@ -17,6 +17,7 @@ class BufferRef:
   def __setitem__(self, index, value): self.builder.set(self.name, self._index(index), value)
 
 def _buffer_name(x): return x.name if isinstance(x, BufferRef) else x
+def _buffer_index(buffer, index): return buffer._index(index) if isinstance(buffer, BufferRef) else index
 
 class KernelBuilder:
   def __init__(self, name, args):
@@ -42,6 +43,10 @@ class KernelBuilder:
   def store(self, buffer, index, value):
     if not self._range_stack: raise ValueError("store requires an active range")
     self._current_body().append(Store(_buffer_name(buffer), index, value))
+  
+  def store_if(self, cond, buffer, index, value):
+    if not self._range_stack: raise ValueError("store_if requires an active range")
+    self._current_body().append(StoreIf(cond, _buffer_name(buffer), _buffer_index(buffer, index), value))
 
   def alloc(self, name, shape, dtype, space="shared"):
     if self._range_stack: raise ValueError("alloc must be top-level")

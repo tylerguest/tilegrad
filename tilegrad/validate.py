@@ -1,4 +1,4 @@
-from tilegrad.ir import Alloc, Barrier, BinaryExpr, Const, Kernel, Load, Range, Store, Index2D, Set, Var
+from tilegrad.ir import Alloc, Barrier, BinaryExpr, Const, Kernel, Load, Not, Range, Store, StoreIf, Index2D, Set, Var
 
 def validate_shape(shape, buffers):
   if isinstance(shape, int):
@@ -22,6 +22,9 @@ def validate_expr(expr, buffers, indices):
     return
   if isinstance(expr, Const):
     if not isinstance(expr.value, (int, float)): raise TypeError(f"const value must be int or float, got {type(expr.value).__name__}")
+    return
+  if isinstance(expr, Not):
+    validate_expr(expr.x, buffers, indices)
     return
   if isinstance(expr, BinaryExpr):
     validate_expr(expr.lhs, buffers, indices)
@@ -49,7 +52,11 @@ def validate_range(op, buffers, indices, saw_effect):
   if op.axis not in ("loop", "reduce"): raise ValueError(f"unknown range axis: {op.axis}")
   indices = indices | {op.name}
   for stmt in op.body:
-    if isinstance(stmt, (Store, Set)):
+    if isinstance(stmt, StoreIf):
+      validate_expr(stmt.cond, buffers, indices)
+      validate_store(stmt, buffers, indices)
+      saw_effect[0] = True
+    elif isinstance(stmt, (Store, Set)):
       validate_store(stmt, buffers, indices)
       saw_effect[0] = True 
     elif isinstance(stmt, Range): validate_range(stmt, buffers, indices, saw_effect)

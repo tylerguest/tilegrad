@@ -1,3 +1,3 @@
 from tilegrad.builder import KernelBuilder
-from tilegrad.ir import Add, Sub, Mul, FloorDiv, Mod, Index2D, Var, add, sub, mul, floordiv, mod, idx2, var
+from tilegrad.ir import Add, And, Eq, FloorDiv, Ge, Gt, Index2D, Le, Lt, Mod, Mul, Ne, Not, Or, Sub, Var, add, and_, eq, floordiv, ge, gt, idx2, le, lt, mod, mul, ne, not_, or_, sub, var
 from tilegrad.lowerer import lower_kernel
