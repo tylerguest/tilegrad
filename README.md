@@ -17,8 +17,10 @@ KernelBuilder -> tilegrad IR -> tinygrad UOps -> tinygrad runtime/codegen
 `tilegrad` is early. It currently focuses on proving a small set of tiled-kernel semantics:
 
 - explicit IR and validation
+- GPU grid and local thread axes
 - shared memory allocations
 - register accumulators
+- unrolled/vectorized loops
 - tiled copies
 - barriers
 - reduce loops
@@ -80,6 +82,58 @@ Expected output:
 [413.0, 434.0, 1061.0, 1118.0]
 ```
 
+Run a grid/thread copy that lowers to GPU launch dimensions:
+
+```bash
+python3 examples/builder_grid_threads_copy.py
+```
+
+Run an unrolled grid/thread copy that lowers to vectorized memory ops:
+
+```bash
+python3 examples/builder_grid_threads_unroll_fill.py
+```
+
+Run the current edge-tiled GEMM boundary example where each local lane computes one output element:
+
+```bash
+python3 examples/builder_grid_threads_output_lanes_gemm_edge.py
+```
+
+Expected output:
+
+```text
+[360.0, 375.0, 390.0, 910.0, 950.0, 990.0, 1460.0, 1525.0, 1590.0]
+```
+
+## Execution Axes
+
+TileGrad ranges map directly to tinygrad `AxisType` values:
+
+| TileGrad API | IR axis | tinygrad axis | Purpose |
+| --- | --- | --- | --- |
+| `k.range(...)` | `"loop"` | `AxisType.LOOP` | serial/logical loop |
+| `k.range(..., axis="reduce")` | `"reduce"` | `AxisType.REDUCE` | recurrence/reduction loop |
+| `k.grid(...)` / `k.blocks(...)` | `"global"` | `AxisType.GLOBAL` | GPU block/grid ids |
+| `k.threads(...)` | `"local"` | `AxisType.LOCAL` | GPU local/thread ids |
+| `k.parallel(...)` | `"local"` | `AxisType.LOCAL` | alias for `k.threads(...)` |
+| `k.range(..., axis="unroll")` | `"unroll"` | `AxisType.UNROLL` | unrolled/vectorized loop |
+
+For example:
+
+```python
+k = KernelBuilder("grid_threads_copy", ("out", "inp"))
+out = k.buffer("out")
+inp = k.buffer("inp")
+
+with k.grid(2) as block:
+  with k.threads(4) as tid:
+    i = block * 4 + tid
+    out[i] = inp[i]
+```
+
+With tinygrad debugging enabled, this lowers through `AxisType.GLOBAL` and `AxisType.LOCAL` to GPU block and thread indices such as `%ctaid.x` and `%tid.x` on CUDA.
+
 ## Example Kernel
 
 A small tiled GEMM in tilegrad uses shared tiles, a register accumulator, tiled copies, a barrier, and a reduce loop:
@@ -104,12 +158,31 @@ with k.range("i", 2):
 
 See `examples/builder_tiled_gemm.py` for the runnable version.
 
+A more GPU-shaped edge-tiled GEMM uses `grid` for output tiles and `threads` for local output lanes:
+
+```python
+with k.grid(2, 2) as (bi, bj):
+  with k.threads(BM, BN) as (ti, tj):
+    gi = bi * BM + ti
+    gj = bj * BN + tj
+    acc[0] = 0
+    with k.range("ko", KTILES) as ko:
+      # cooperative shared-memory tile fill
+      k.barrier()
+      with k.range("kk", BK, axis="reduce") as kk:
+        acc[0] = acc[0] + as_tile[ti, kk] * bs_tile[kk, tj]
+    k.store_if((gi < M) & (gj < N), out, (gi, gj), acc[0])
+```
+
+See `examples/builder_grid_threads_output_lanes_gemm_edge.py` for the runnable version.
+
 ## Debugging
 
 Because tilegrad lowers to tinygrad UOps, tinygrad debugging tools work normally:
 
 ```bash
 DEBUG=6 python3 examples/builder_tiled_gemm.py
+DEBUG=6 python3 examples/builder_grid_threads_output_lanes_gemm_edge.py
 VIZ=1 python3 examples/ir_shared_copy.py
 ```
 
