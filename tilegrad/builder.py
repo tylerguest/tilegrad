@@ -49,7 +49,13 @@ class KernelBuilder:
 
   def _current_body(self): return self._range_stack[-1] if self._range_stack else self._body 
 
-  def parallel(self, *extents): return _ParallelContext(self, extents)
+  def grid(self, *extents): return _AxesContext(self, "_g", extents, "global")
+
+  def blocks(self, *extents): return self.grid(*extents)
+
+  def threads(self, *extents): return _AxesContext(self, "_t", extents, "local")
+
+  def parallel(self, *extents): return self.threads(*extents)
 
   def buffer(self, name, shape=None): return BufferRef(self, name, shape)
 
@@ -153,16 +159,18 @@ class _RangeContext:
     if exc_type is None: self.builder._current_body().append(Range(self.name, self.extent, tuple(body), self.axis))
     return False
 
-class _ParallelContext:
-  def __init__(self, builder, extents):
+class _AxesContext:
+  def __init__(self, builder, prefix, extents, axis):
     self.builder = builder
+    self.prefix = prefix
     self.extents = extents
+    self.axis = axis
     self.names = None
-  
+
   def __enter__(self):
     n = self.builder._parallel_counter
     self.builder._parallel_counter += 1
-    self.names = tuple(f"_p{n}_i{i}" for i in range(len(self.extents)))
+    self.names = tuple(f"{self.prefix}{n}_i{i}" for i in range(len(self.extents)))
     self.builder._range_stack.append([])
     vars = tuple(Var(name) for name in self.names)
     return vars[0] if len(vars) == 1 else vars
@@ -171,6 +179,6 @@ class _ParallelContext:
     body = tuple(self.builder._range_stack.pop())
     if exc_type is None:
       for name, extent in reversed(tuple(zip(self.names, self.extents))):
-        body = (Range(name, extent, body),)
+        body = (Range(name, extent, body, self.axis),)
       self.builder._current_body().extend(body)
     return False

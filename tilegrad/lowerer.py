@@ -5,6 +5,8 @@ from tilegrad.ir import Add, Alloc, And, Barrier, BinaryExpr, Const, Eq, FloorDi
 from tilegrad.unroll import unroll_register_tiles
 from tilegrad.validate import validate_kernel
 
+AXIS_TYPES = { "loop": AxisType.LOOP, "reduce": AxisType.REDUCE, "global": AxisType.GLOBAL, "local": AxisType.LOCAL, "unroll": AxisType.UNROLL, }
+
 def lower_shape(shape, env):
   if isinstance(shape, int): return shape
   if shape.endswith(".numel"): return env[shape[:-6]].max_numel()
@@ -209,7 +211,7 @@ def lower_set(stmt, env, updated_buffers, local_updated, shared_read_effects, in
   local_updated.add(stmt.buffer)
 
 def lower_range(op, env, effects, sink_effects, buffer_effects, pending_shared, store_state, shared_read_effects, updated_buffers, indices, range_slots, register_scopes, active_ranges=()):
-  axis_type = AxisType.REDUCE if op.axis == "reduce" else AxisType.LOOP
+  axis_type = AXIS_TYPES[op.axis]
   i = UOp.range(lower_shape(op.extent, env), range_slots[0], axis_type)
   range_slots[0] += 1
   indices = indices | {op.name: i}
@@ -224,7 +226,7 @@ def lower_range(op, env, effects, sink_effects, buffer_effects, pending_shared, 
     elif isinstance(stmt, Set): lower_set(stmt, env, updated_buffers, local_updated, shared_read_effects, indices, active_ranges, op.axis, register_scopes)
     elif isinstance(stmt, Barrier): lower_barrier(env, effects, buffer_effects, pending_shared, active_ranges)
     else: raise NotImplementedError(type(stmt).__name__)
-  if op.axis == "loop":
+  if op.axis != "reduce":
     for name in local_updated:
       if name not in env: continue
       buf = env[name]

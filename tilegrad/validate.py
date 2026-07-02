@@ -1,5 +1,7 @@
 from tilegrad.ir import Alloc, Barrier, BinaryExpr, Const, FragmentAlloc, FragmentClear, FragmentGemm, FragmentStore, Kernel, Load, LoadIf, Not, Range, Store, StoreIf, Index2D, Set, SetIf, Var
 
+VALID_RANGE_AXES = ("loop", "reduce", "global", "local", "unroll")
+
 def validate_shape(shape, buffers):
   if isinstance(shape, int):
     if shape <= 0: raise ValueError(f"shape must be positive: {shape}")
@@ -141,7 +143,7 @@ def validate_fragment_stmt(stmt, buffers, indices, saw_effect, register_buffers,
 def validate_range(op, buffers, indices, saw_effect, register_buffers=None, fragments=None):
   validate_shape(op.extent, buffers)
   if op.name in indices: raise ValueError(f"duplicate range variable: {op.name}")
-  if op.axis not in ("loop", "reduce"): raise ValueError(f"unknown range axis: {op.axis}")
+  if op.axis not in VALID_RANGE_AXES: raise ValueError(f"unknown range axis: {op.axis}")
   indices = indices | {op.name}
   for stmt in op.body:
     if isinstance(stmt, (StoreIf, SetIf)):

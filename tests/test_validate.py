@@ -359,6 +359,15 @@ class TestValidate(unittest.TestCase):
       (FragmentAlloc("acc", (2, 2), "float32"), FragmentStore("acc", "out", 0, 0, 3, bounds=(Var("missing"), 3))),
     )
     with self.assertRaisesRegex(ValueError, "unknown index variable: missing"): validate_kernel(kernel)
+  
+  def test_validate_accepts_execution_axes(self):
+    for axis in ("loop", "reduce", "global", "local", "unroll"):
+      kernel = Kernel(
+        f"axis_{axis}",
+        (Arg("out"),),
+        (Range("i", 4, (Store("out", "i", 0),), axis=axis),),
+      )
+      validate_kernel(kernel)
 
 if __name__ == "__main__":
   unittest.main()

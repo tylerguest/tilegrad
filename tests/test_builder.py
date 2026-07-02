@@ -714,18 +714,18 @@ class TestBuilder(unittest.TestCase):
     with k.parallel(2, 2) as (i, j):
       out[i, j] = a[i, j] + b[i, j]
     self.assertEqual(k.build().body, (
-      Range("_p0_i0", 2, (
-        Range("_p0_i1", 2, (
+      Range("_t0_i0", 2, (
+        Range("_t0_i1", 2, (
           Set(
             "out",
-            Index2D(Var("_p0_i0"), Var("_p0_i1"), 2),
+            Index2D(Var("_t0_i0"), Var("_t0_i1"), 2),
             Add(
-              Load("a", Index2D(Var("_p0_i0"), Var("_p0_i1"), 2)),
-              Load("b", Index2D(Var("_p0_i0"), Var("_p0_i1"), 2)),
+              Load("a", Index2D(Var("_t0_i0"), Var("_t0_i1"), 2)),
+              Load("b", Index2D(Var("_t0_i0"), Var("_t0_i1"), 2)),
             ),
           ),
-        )),
-      )),
+        ), "local"),
+      ), "local"),
     ))
   
   def test_builder_methods_accept_buffer_refs(self):
@@ -848,6 +848,68 @@ class TestBuilder(unittest.TestCase):
     out = Tensor.empty(6)
     out = out.custom_kernel(a, b, fxn=vecadd_kernel)[0].realize()
     self.assertEqual(out.tolist(), [11.0, 22.0, 33.0, 44.0, 55.0, 66.0])
+
+  def test_builder_grid_ir(self):
+    k = KernelBuilder("grid", ("out",))
+    with k.grid(2, 3) as (bx, by):
+      k.store("out", Add(Mul(bx, 3), by), 1)
+    expected = Kernel(
+      "grid",
+      (Arg("out"),),
+      (
+        Range("_g0_i0", 2, (
+          Range("_g0_i1", 3, (
+            Store("out", Add(Mul(Var("_g0_i0"), 3), Var("_g0_i1")), 1),
+          ), "global"),
+        ), "global"),
+      ),
+    )
+    self.assertEqual(k.build(), expected)
+  
+  def test_builder_threads_ir(self):
+    k = KernelBuilder("threads", ("out",))
+    with k.threads(4) as tid:
+      k.store("out", tid, 1)
+    expected = Kernel(
+      "threads",
+      (Arg("out"),),
+      (
+        Range("_t0_i0", 4, (
+          Store("out", Var("_t0_i0"), 1),
+        ), "local"),
+      ),
+    )
+    self.assertEqual(k.build(), expected)
+  
+  def test_builder_parallel_aliases_threads_ir(self):
+    k = KernelBuilder("parallel", ("out",))
+    with k.parallel(4) as tid:
+      k.store("out", tid, 1)
+    expected = Kernel(
+      "parallel",
+      (Arg("out"),),
+      (
+        Range("_t0_i0", 4, (
+          Store("out", Var("_t0_i0"), 1),
+        ), "local"),
+      ),
+    )
+    self.assertEqual(k.build(), expected)
+
+  def test_builder_unroll_range_ir(self):
+    k = KernelBuilder("unroll_range", ("out",))
+    with k.range("u", 4, axis="unroll") as u:
+      k.store("out", u, u)
+    expected = Kernel(
+      "unroll_range",
+      (Arg("out"),),
+      (
+        Range("u", 4, (
+          Store("out", Var("u"), Var("u")),
+        ), "unroll"),
+      ),
+    )
+    self.assertEqual(k.build(), expected)
 
 if __name__ == "__main__":
   unittest.main()

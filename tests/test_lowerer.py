@@ -1,7 +1,7 @@
 import unittest
 from tinygrad import Tensor
 from tinygrad.dtype import AddrSpace, dtypes
-from tinygrad.uop.ops import Ops, UOp
+from tinygrad.uop.ops import AxisType, Ops, UOp
 from tilegrad.ir import Add, Alloc, Arg, Barrier, FragmentAlloc, FragmentClear, FragmentGemm, FragmentStore, FloorDiv, Kernel, Load, Lt, Mod, Mul, Range, Set, SetIf, Store, Index2D, Sub, Var
 from tilegrad.lowerer import lower_kernel
 
@@ -656,6 +656,42 @@ class TestLowerer(unittest.TestCase):
     reg_indexes = [u for u in sink.toposort() if u.op is Ops.INDEX and u.src[0].addrspace is AddrSpace.REG]
     self.assertTrue(reg_indexes)
     self.assertTrue(all(u.src[1].op is Ops.CONST for u in reg_indexes))
+
+  def test_lower_grid_threads_axis_types(self):
+    ir = Kernel(
+      "test_lower_grid_threads_axis_types",
+      (Arg("out"),),
+      (
+        Range("b", 2, (
+          Range("t", 4, (
+            Store("out", Add(Mul(Var("b"), 4), Var("t")), 1),
+          ), axis="local"),
+        ), axis="global"),
+      ),
+    )
+    out = UOp.placeholder((8,), dtypes.float, slot=-1)
+    sink = lower_kernel(ir, out)
+    ranges = [u for u in sink.toposort() if u.op is Ops.RANGE]
+    axis_types = [r.arg[1] for r in ranges]
+    self.assertIn(AxisType.GLOBAL, axis_types)
+    self.assertIn(AxisType.LOCAL, axis_types)
+  
+  def test_lower_unroll_axis_type(self):
+    ir = Kernel(
+      "test_lower_unroll_axis_type",
+      (Arg("out"),),
+      (
+        Range("u", 4, (
+          Store("out", Var("u"), Var("u")),
+        ), axis="unroll"),
+      ),
+    )
+
+    out = UOp.placeholder((4,), dtypes.float, slot=-1)
+    sink = lower_kernel(ir, out)
+    ranges = [u for u in sink.toposort() if u.op is Ops.RANGE]
+    axis_types = [r.arg[1] for r in ranges]
+    self.assertIn(AxisType.UNROLL, axis_types)
 
 if __name__ == "__main__":
   unittest.main()

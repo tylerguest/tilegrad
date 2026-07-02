@@ -381,6 +381,7 @@ class TestRuntime(unittest.TestCase):
     inp = Tensor([1.0, 2.0, 3.0, 4.0])
     out = Tensor.empty(4)
     self.assertEqual(run(ir, out, inp).tolist(), [1.0, 2.0, 3.0, 4.0])
+
   def test_run_lazy_no_realize(self):
     k = KernelBuilder("copy", ("out", "inp"))
     with k.range("i", "out.numel"): k.store("out", "i", k.load("inp", "i"))
@@ -389,22 +390,76 @@ class TestRuntime(unittest.TestCase):
     lazy = run(k, out, inp, realize=False)
     self.assertIsInstance(lazy, Tensor)
     self.assertEqual(lazy.realize().tolist(), [1.0, 2.0, 3.0, 4.0])
+
   def test_run_arg_count_mismatch_raises(self):
     k = KernelBuilder("copy", ("out", "inp"))
     with k.range("i", "out.numel"): k.store("out", "i", k.load("inp", "i"))
     out = Tensor.empty(4)
     with self.assertRaises(ValueError):
       run(k, out)  # missing inp -> lower_kernel sees 1 arg vs 2
+
   def test_run_rejects_bad_kernel_type(self):
     out = Tensor.empty(4)
     inp = Tensor([1.0, 2.0, 3.0, 4.0])
     with self.assertRaises(TypeError):
       run("not a kernel", out, inp)
+
   def test_run_rejects_no_tensors(self):
     k = KernelBuilder("zero", ("out",))
     with k.range("i", "out.numel"): k.store("out", "i", 0)
     with self.assertRaises(ValueError):
       run(k)
+
+  def test_run_threads_vecadd(self):
+    k = KernelBuilder("threads_vecadd", ("out", "a", "b"))
+    out = k.buffer("out")
+    a = k.buffer("a")
+    b = k.buffer("b")
+    with k.threads(4) as i: out[i] = a[i] + b[i]
+    a_t = Tensor([1.0, 2.0, 3.0, 4.0])
+    b_t = Tensor([10.0, 20.0, 30.0, 40.0])
+    out_t = Tensor.empty(4)
+    self.assertEqual(run(k, out_t, a_t, b_t).tolist(), [11.0, 22.0, 33.0, 44.0])
+  
+  def test_run_grid_threads_copy(self):
+    k = KernelBuilder("grid_threads_copy", ("out", "inp"))
+    out = k.buffer("out")
+    inp = k.buffer("inp")
+    with k.grid(2) as block:
+      with k.threads(4) as tid:
+        i = block * 4 + tid
+        out[i] = inp[i]
+    inp_t = Tensor([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])
+    out_t = Tensor.empty(8)
+    self.assertEqual(run(k, out_t, inp_t).tolist(), [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])
+  
+  def test_run_unroll_range(self):
+    k = KernelBuilder("unroll_range", ("out", "inp"))
+    out = k.buffer("out")
+    inp = k.buffer("inp")
+
+    with k.range("u", 4, axis="unroll") as u:
+      out[u] = inp[u]
+    
+    inp_t = Tensor([0.0, 1.0, 2.0, 3.0])
+    out_t = Tensor.empty(4)
+    self.assertEqual(run(k, out_t, inp_t).tolist(), [0.0, 1.0, 2.0, 3.0])
+
+  def test_run_grid_threads_unroll_fill(self):
+    k = KernelBuilder("grid_threads_unroll_fill", ("out", "inp"))
+    out = k.buffer("out")
+    inp = k.buffer("inp")
+
+    with k.grid(2) as block:
+      with k.threads(2) as tid:
+        base = block * 4 + tid * 2
+        with k.range("u", 2, axis="unroll") as u:
+          i = base + u 
+          out[i] = inp[i]
+    
+    inp_t = Tensor([0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0])
+    out_t = Tensor.empty(8)
+    self.assertEqual(run(k, out_t, inp_t).tolist(), [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0])
 
 if __name__ == "__main__":
   unittest.main()
