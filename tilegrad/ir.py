@@ -127,6 +127,37 @@ class StoreIf(Stmt):
   value: object
 
 @dataclass(frozen=True)
+class FragmentAlloc(KernelOp):
+  name: str
+  shape: tuple[int, int]
+  dtype: str
+
+@dataclass(frozen=True)
+class FragmentClear(Stmt):
+  buffer: str
+
+@dataclass(frozen=True)
+class FragmentGemm(Stmt):
+  a: str
+  b: str
+  c: str
+  a_shape: tuple[int, int]
+  b_shape: tuple[int, int]
+  c_shape: tuple[int, int]
+  trans_a: bool = False
+  trans_b: bool = False
+
+@dataclass(frozen=True)
+class FragmentStore(Stmt):
+  src: str
+  dst: str
+  dst_row: object
+  dst_col: object
+  dst_stride: object
+  guard: object | None = None
+  bounds: tuple[object, object] | None = None
+
+@dataclass(frozen=True)
 class Range(Stmt, KernelOp):
   name: str
   extent: int | str

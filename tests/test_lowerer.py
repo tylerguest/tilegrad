@@ -1,6 +1,8 @@
 import unittest
 from tinygrad import Tensor
-from tilegrad.ir import Add, Alloc, Arg, Barrier, FloorDiv, Kernel, Load, Mod, Mul, Range, Set, Store, Index2D, Sub
+from tinygrad.dtype import AddrSpace, dtypes
+from tinygrad.uop.ops import Ops, UOp
+from tilegrad.ir import Add, Alloc, Arg, Barrier, FragmentAlloc, FragmentClear, FragmentGemm, FragmentStore, FloorDiv, Kernel, Load, Lt, Mod, Mul, Range, Set, SetIf, Store, Index2D, Sub, Var
 from tilegrad.lowerer import lower_kernel
 
 
@@ -577,7 +579,83 @@ class TestLowerer(unittest.TestCase):
     out = out.custom_kernel(a, b, fxn=gemm_kernel)[0].realize()
     self.assertEqual(out.tolist(), [58.0, 64.0, 139.0, 154.0])
 
+  def test_lower_set_if_with_nested_ranges_register(self):
+    ir = Kernel(
+      "test_lower_set_if_nested_ranges_register",
+      (Arg("out"),),
+      (
+        Alloc("acc", 1, "float32", "register"),
+        Range("i", 2, (
+          SetIf(Lt(Var("i"), 1), "acc", 0, 7),
+          Store("out", "i", Load("acc", 0)),
+        )),
+      ),
+    )
+    out = UOp.placeholder((2,), dtypes.float, slot=-1)
+    sink = lower_kernel(ir, out)
 
+    ranges = [u for u in sink.toposort() if u.op is Ops.RANGE]
+    self.assertEqual(len(ranges), 1)
+    i = ranges[0]
+
+    reg_store_ends = [
+      u for u in sink.toposort()
+      if u.op is Ops.END and u.src and u.src[0].op is Ops.STORE and u.src[0].src[0].addrspace is AddrSpace.REG
+    ]
+
+    # The loop-axis SetIf on the register buffer must end the conditional
+    # register store over the newly opened register scope. Without lower_set
+    # passing register_end_ranges into set(end=...) for conditional loop-axis
+    # register sets, the register STORE containing the WHERE is not wrapped in
+    # END(i), and later control-flow rewrites can see an inconsistent register
+    # AFTER chain.
+    self.assertTrue(any(
+      end.src[0].src[1].op is Ops.WHERE and i in end.src[1:]
+      for end in reg_store_ends
+    ))
+
+  def test_lower_unrolls_register_tile_indices(self):
+    ir = Kernel(
+      "test_lower_unrolls_register_tile_indices",
+      (Arg("out"),),
+      (
+        Alloc("acc", 4, "float32", "register"),
+        Range("ii", 2, (
+          Range("jj", 2, (
+            Set("acc", Index2D(Var("ii"), Var("jj"), 2), Add(Mul(Var("ii"), 10), Var("jj"))),
+          )),
+        )),
+        Range("ii", 2, (
+          Range("jj", 2, (
+            Store("out", Index2D(Var("ii"), Var("jj"), 2), Load("acc", Index2D(Var("ii"), Var("jj"), 2))),
+          )),
+        )),
+      ),
+    )
+    out = UOp.placeholder((4,), dtypes.float, slot=-1)
+    sink = lower_kernel(ir, out)
+
+    reg_indexes = [u for u in sink.toposort() if u.op is Ops.INDEX and u.src[0].addrspace is AddrSpace.REG]
+    self.assertTrue(reg_indexes)
+    self.assertTrue(all(u.src[1].op is Ops.CONST for u in reg_indexes))
+    self.assertEqual(sorted({u.src[1].arg for u in reg_indexes}), [0, 1, 2, 3])
+
+  def test_lower_fragment_alloc_clear_indices_constant(self):
+    ir = Kernel(
+      "test_lower_fragment_alloc_clear_indices_constant",
+      (Arg("out"),),
+      (
+        FragmentAlloc("acc", (2, 2), "float32"),
+        FragmentClear("acc"),
+        Store("out", 0, Load("acc", 0)),
+      ),
+    )
+    out = UOp.placeholder((1,), dtypes.float, slot=-1)
+    sink = lower_kernel(ir, out)
+
+    reg_indexes = [u for u in sink.toposort() if u.op is Ops.INDEX and u.src[0].addrspace is AddrSpace.REG]
+    self.assertTrue(reg_indexes)
+    self.assertTrue(all(u.src[1].op is Ops.CONST for u in reg_indexes))
 
 if __name__ == "__main__":
   unittest.main()

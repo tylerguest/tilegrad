@@ -1,5 +1,5 @@
 import unittest
-from tilegrad.ir import Add, Arg, Barrier, Const, Kernel, Load, LoadIf, Range, Set, SetIf, Store, Var, lt, And, Lt, StoreIf
+from tilegrad.ir import Add, Arg, Alloc, Barrier, Const, FragmentAlloc, FragmentClear, FragmentGemm, FragmentStore, Index2D, Kernel, Load, LoadIf, Mul, Range, Set, SetIf, Store, Var, lt, And, Lt, StoreIf
 from tilegrad.validate import validate_kernel
 
 class TestValidate(unittest.TestCase):
@@ -174,6 +174,191 @@ class TestValidate(unittest.TestCase):
       (Range("i", 5, (Set("out", Var("i"), LoadIf(lt(Var("i"), 4), "missing", Var("i"))),)),),
     )
     with self.assertRaisesRegex(ValueError, "unknown buffer: missing"): validate_kernel(kernel)
+
+  def test_register_indexed_by_range_var_fails(self):
+    kernel = Kernel(
+      "bad_reg_index",
+      (Arg("out"), Arg("a"), Arg("b")),
+      (
+        Alloc("acc", 4, "float32", "register"),
+        Alloc("as", 6, "float32", "shared"),
+        Alloc("bs", 6, "float32", "shared"),
+        Range("bi", 2, (
+          Range("bj", 2, (
+            Range("ii", 2, (
+              Range("jj", 2, (
+                Set("acc", Index2D(Var("ii"), Var("jj"), 2), 0),
+              )),
+            )),
+          )),
+        )),
+      ),
+    )
+    with self.assertRaisesRegex(ValueError, "register buffer 'acc' cannot be indexed by a range variable"): validate_kernel(kernel)
+
+  def test_register_constant_index_ok(self):
+    kernel = Kernel(
+      "reg_const_index",
+      (Arg("out"), Arg("a"), Arg("b")),
+      (
+        Alloc("acc", 4, "float32", "register"),
+        Alloc("as", 6, "float32", "shared"),
+        Alloc("bs", 6, "float32", "shared"),
+        Range("bi", 2, (
+          Range("bj", 2, (
+            Range("ii", 2, (
+              Range("jj", 2, (
+                Set("acc", 0, 0),
+              )),
+            )),
+          )),
+        )),
+      ),
+    )
+    validate_kernel(kernel)
+
+  def test_register_1d_const_in_loop_ok(self):
+    kernel = Kernel(
+      "reg_const_1d",
+      (Arg("out"), Arg("inp")),
+      (
+        Alloc("acc", 1, "float32", "register"),
+        Range("i", 4, (
+          Set("acc", 0, Load("inp", Var("i"))),
+          Set("out", Var("i"), Load("acc", 0)),
+        )),
+      ),
+    )
+    validate_kernel(kernel)
+
+  def test_register_load_indexed_by_range_var_fails(self):
+    kernel = Kernel(
+      "bad_reg_load_index",
+      (Arg("out"),),
+      (
+        Alloc("acc", 4, "float32", "register"),
+        Range("ii", 2, (
+          Range("jj", 2, (
+            Set("out", 0, Load("acc", Index2D(Var("ii"), Var("jj"), 2))),
+          )),
+        )),
+      ),
+    )
+    with self.assertRaisesRegex(ValueError, "register buffer 'acc' cannot be indexed by a range variable"): validate_kernel(kernel)
+
+  def test_validate_accepts_fragment_alloc_clear_gemm_store(self):
+    kernel = Kernel(
+      "fragment_ok",
+      (Arg("out"),),
+      (
+        Alloc("as", 6, "float32", "shared"),
+        Alloc("bs", 6, "float32", "shared"),
+        FragmentAlloc("acc", (2, 2), "float32"),
+        Range("i", 1, (
+          FragmentClear("acc"),
+          FragmentGemm("as", "bs", "acc", (2, 3), (3, 2), (2, 2)),
+          FragmentStore("acc", "out", 0, 0, 3, Lt(Var("i"), 1)),
+        )),
+      ),
+    )
+    validate_kernel(kernel)
+
+  def test_fragment_duplicate_name_fails(self):
+    kernel = Kernel("bad_fragment_dup", (Arg("out"),), (FragmentAlloc("out", (2, 2), "float32"),))
+    with self.assertRaisesRegex(ValueError, "duplicate buffer name: out"): validate_kernel(kernel)
+
+  def test_fragment_invalid_shape_fails(self):
+    kernel = Kernel("bad_fragment_shape", (Arg("out"),), (FragmentAlloc("acc", (2, 0), "float32"),))
+    with self.assertRaisesRegex(ValueError, "fragment shape must contain positive integers"): validate_kernel(kernel)
+
+  def test_fragment_clear_unknown_fails(self):
+    kernel = Kernel("bad_fragment_clear", (Arg("out"),), (FragmentClear("missing"),))
+    with self.assertRaisesRegex(ValueError, "unknown buffer: missing"): validate_kernel(kernel)
+
+  def test_fragment_clear_non_fragment_fails(self):
+    kernel = Kernel("bad_fragment_clear", (Arg("out"),), (Alloc("acc", 4, "float32", "register"), FragmentClear("acc")))
+    with self.assertRaisesRegex(ValueError, "fragment clear buffer must be a fragment: acc"): validate_kernel(kernel)
+
+  def test_fragment_gemm_unknown_input_fails(self):
+    kernel = Kernel(
+      "bad_fragment_gemm_input",
+      (Arg("out"),),
+      (Alloc("bs", 6, "float32", "shared"), FragmentAlloc("acc", (2, 2), "float32"), FragmentGemm("missing", "bs", "acc", (2, 3), (3, 2), (2, 2))),
+    )
+    with self.assertRaisesRegex(ValueError, "unknown buffer: missing"): validate_kernel(kernel)
+
+  def test_fragment_gemm_c_must_be_fragment_fails(self):
+    kernel = Kernel(
+      "bad_fragment_gemm_c",
+      (Arg("out"),),
+      (
+        Alloc("as", 6, "float32", "shared"),
+        Alloc("bs", 6, "float32", "shared"),
+        Alloc("acc", 4, "float32", "register"),
+        FragmentGemm("as", "bs", "acc", (2, 3), (3, 2), (2, 2)),
+      ),
+    )
+    with self.assertRaisesRegex(ValueError, "fragment gemm C must be a fragment: acc"): validate_kernel(kernel)
+
+  def test_fragment_gemm_shape_mismatch_fails(self):
+    kernel = Kernel(
+      "bad_fragment_gemm_shape",
+      (Arg("out"),),
+      (
+        Alloc("as", 6, "float32", "shared"),
+        Alloc("bs", 6, "float32", "shared"),
+        FragmentAlloc("acc", (2, 2), "float32"),
+        FragmentGemm("as", "bs", "acc", (2, 4), (3, 2), (2, 2)),
+      ),
+    )
+    with self.assertRaisesRegex(ValueError, "fragment gemm shape mismatch"): validate_kernel(kernel)
+
+  def test_scalar_load_from_fragment_fails(self):
+    kernel = Kernel(
+      "bad_fragment_load",
+      (Arg("out"),),
+      (FragmentAlloc("acc", (2, 2), "float32"), Set("out", 0, Load("acc", 0))),
+    )
+    with self.assertRaisesRegex(ValueError, "fragment buffer 'acc' cannot be used with scalar Load/Set/Store"): validate_kernel(kernel)
+
+  def test_scalar_set_to_fragment_fails(self):
+    kernel = Kernel("bad_fragment_set", (Arg("out"),), (FragmentAlloc("acc", (2, 2), "float32"), Set("acc", 0, 0)))
+    with self.assertRaisesRegex(ValueError, "fragment buffer 'acc' cannot be used with scalar Load/Set/Store"): validate_kernel(kernel)
+
+  def test_fragment_store_unknown_src_fails(self):
+    kernel = Kernel("bad_fragment_store_src", (Arg("out"),), (FragmentStore("missing", "out", 0, 0, 3),))
+    with self.assertRaisesRegex(ValueError, "unknown buffer: missing"): validate_kernel(kernel)
+
+  def test_fragment_store_unknown_dst_fails(self):
+    kernel = Kernel("bad_fragment_store_dst", (Arg("out"),), (FragmentAlloc("acc", (2, 2), "float32"), FragmentStore("acc", "missing", 0, 0, 3)))
+    with self.assertRaisesRegex(ValueError, "unknown buffer: missing"): validate_kernel(kernel)
+
+  def test_fragment_store_predicate_unknown_var_fails(self):
+    kernel = Kernel(
+      "bad_fragment_store_predicate",
+      (Arg("out"),),
+      (FragmentAlloc("acc", (2, 2), "float32"), FragmentStore("acc", "out", 0, 0, 3, Lt(Var("missing"), 1))),
+    )
+    with self.assertRaisesRegex(ValueError, "unknown index variable: missing"): validate_kernel(kernel)
+
+  def test_validate_accepts_fragment_store_bounds(self):
+    kernel = Kernel(
+      "fragment_store_bounds",
+      (Arg("out"),),
+      (
+        FragmentAlloc("acc", (2, 2), "float32"),
+        Range("i", 1, (FragmentStore("acc", "out", 0, 0, 3, bounds=(3, 3)),)),
+      ),
+    )
+    validate_kernel(kernel)
+
+  def test_fragment_store_bounds_unknown_var_fails(self):
+    kernel = Kernel(
+      "bad_fragment_store_bounds",
+      (Arg("out"),),
+      (FragmentAlloc("acc", (2, 2), "float32"), FragmentStore("acc", "out", 0, 0, 3, bounds=(Var("missing"), 3))),
+    )
+    with self.assertRaisesRegex(ValueError, "unknown index variable: missing"): validate_kernel(kernel)
 
 if __name__ == "__main__":
   unittest.main()

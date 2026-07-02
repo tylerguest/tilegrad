@@ -145,7 +145,7 @@ class TestRuntime(unittest.TestCase):
     with k.range("i", 2) as i:
       with k.range("j", 2) as j:
         acc[0] = 0
-        with k.range("ko", 2) as ko:
+        for ko in range(2):
           with k.range("kk", 3) as kk:
             gk = ko * 3 + kk
             k.store(as_tile, kk, k.load_if(gk < 5, a, (i, gk)))
@@ -182,7 +182,7 @@ class TestRuntime(unittest.TestCase):
     with k.range("i", 4) as i:
       with k.range("j", 4) as j:
         acc[0] = 0
-        with k.range("ko", 2) as ko:
+        for ko in range(2):
           with k.range("kk", 3) as kk:
             gk = ko * 3 + kk
             k.store(as_tile, kk, k.load_if((i < 3) & (gk < 5), a, (i, gk)))
@@ -210,21 +210,37 @@ class TestRuntime(unittest.TestCase):
       1460.0, 1525.0, 1590.0,
     ])
 
-  @unittest.skip("2D register accumulator indexed by loop vars (acc[ii, jj]) is not supported by tinygrad's PTX renderer (requires constant register indices)")
+  def test_run_register_tile_unroll(self):
+    k = KernelBuilder("register_tile_unroll", ("out",))
+    k.alloc("acc", 4, "float32", "register")
+    out = k.buffer("out", shape=(2, 2))
+    acc = k.buffer("acc", shape=(2, 2))
+
+    with k.range("ii", 2) as ii:
+      with k.range("jj", 2) as jj:
+        acc[ii, jj] = ii * 10 + jj
+
+    with k.range("ii", 2) as ii:
+      with k.range("jj", 2) as jj:
+        out[ii, jj] = acc[ii, jj]
+
+    out_t = Tensor.empty(4)
+    self.assertEqual(run(k, out_t).tolist(), [0.0, 1.0, 10.0, 11.0])
+
   def test_run_tiled_gemm_bm_bn_accum_tile(self):
     k = KernelBuilder("tiled_gemm_bm_bn_accum_tile", ("out", "a", "b"))
     k.alloc("as", 6, "float32")
     k.alloc("bs", 6, "float32")
-    k.alloc("acc", 4, "float32", "register")
     out = k.buffer("out", shape=(3, 3))
     a = k.buffer("a", shape=(3, 5))
     b = k.buffer("b", shape=(5, 3))
     as_tile = k.buffer("as", shape=(2, 3))
     bs_tile = k.buffer("bs", shape=(3, 2))
-    acc = k.buffer("acc", shape=(2, 2))
+    acc = k.fragment("acc", (2, 2), "float32")
     with k.range("bi", 2) as bi:
       with k.range("bj", 2) as bj:
-        with k.range("ko", 2) as ko:
+        k.clear(acc)
+        for ko in range(2):
           with k.range("ii", 2) as ii:
             gi = bi * 2 + ii
             with k.range("kk", 3) as kk:
@@ -236,16 +252,8 @@ class TestRuntime(unittest.TestCase):
               gj = bj * 2 + jj
               k.store(bs_tile, (kk, jj), k.load_if((gk < 5) & (gj < 3), b, (gk, gj)))
           k.barrier()
-          with k.range("ii", 2) as ii:
-            with k.range("jj", 2) as jj:
-              k.set_if(ko < 1, acc, (ii, jj), 0)
-              with k.range("kk", 3, axis="reduce") as kk:
-                acc[ii, jj] = acc[ii, jj] + as_tile[ii, kk] * bs_tile[kk, jj]
-        with k.range("ii", 2) as ii:
-          gi = bi * 2 + ii
-          with k.range("jj", 2) as jj:
-            gj = bj * 2 + jj
-            k.store_if((gi < 3) & (gj < 3), out, (gi, gj), acc[ii, jj])
+          k.gemm(as_tile, bs_tile, acc)
+        k.store_fragment(acc, out, (bi * 2, bj * 2), bounds=(3, 3))
     a_t = Tensor([
       1.0, 2.0, 3.0, 4.0, 5.0,
       6.0, 7.0, 8.0, 9.0, 10.0,
@@ -264,6 +272,94 @@ class TestRuntime(unittest.TestCase):
       910.0, 950.0, 990.0,
       1460.0, 1525.0, 1590.0,
     ])
+
+  def test_run_fragment_store_bounds_2x2_into_3x3_edge(self):
+    k = KernelBuilder("fragment_store_bounds_2x2_into_3x3_edge", ("out",))
+    out = k.buffer("out", shape=(3, 3))
+    acc = k.fragment("acc", (2, 2), "float32")
+    k.clear(acc)
+    k.store_fragment(acc, out, (2, 2), bounds=(3, 3))
+    out_t = Tensor([9.0] * 9)
+    result = run(k, out_t).tolist()
+    self.assertEqual(result, [9.0, 9.0, 9.0, 9.0, 9.0, 9.0, 9.0, 9.0, 0.0])
+
+  def test_run_tiled_gemm_bm_bn_accum_fragment(self):
+    k = KernelBuilder("tiled_gemm_bm_bn_accum_fragment", ("out", "a", "b"))
+    k.alloc("as", 6, "float32")
+    k.alloc("bs", 6, "float32")
+    out = k.buffer("out", shape=(3, 3))
+    a = k.buffer("a", shape=(3, 5))
+    b = k.buffer("b", shape=(5, 3))
+    as_tile = k.buffer("as", shape=(2, 3))
+    bs_tile = k.buffer("bs", shape=(3, 2))
+    acc = k.fragment("acc", (2, 2), "float32")
+
+    with k.range("bi", 2) as bi:
+      with k.range("bj", 2) as bj:
+        k.clear(acc)
+        for ko in range(2):
+          with k.range("ii", 2) as ii:
+            gi = bi * 2 + ii
+            with k.range("kk", 3) as kk:
+              gk = ko * 3 + kk
+              k.store(as_tile, (ii, kk), k.load_if((gi < 3) & (gk < 5), a, (gi, gk)))
+          with k.range("kk", 3) as kk:
+            gk = ko * 3 + kk
+            with k.range("jj", 2) as jj:
+              gj = bj * 2 + jj
+              k.store(bs_tile, (kk, jj), k.load_if((gk < 5) & (gj < 3), b, (gk, gj)))
+          k.barrier()
+          k.gemm(as_tile, bs_tile, acc)
+        k.store_fragment(acc, out, (bi * 2, bj * 2), bounds=(3, 3))
+
+    a_t = Tensor([
+      1.0, 2.0, 3.0, 4.0, 5.0,
+      6.0, 7.0, 8.0, 9.0, 10.0,
+      11.0, 12.0, 13.0, 14.0, 15.0,
+    ])
+    b_t = Tensor([
+      16.0, 17.0, 18.0,
+      19.0, 20.0, 21.0,
+      22.0, 23.0, 24.0,
+      25.0, 26.0, 27.0,
+      28.0, 29.0, 30.0,
+    ])
+    out_t = Tensor.empty(9)
+    self.assertEqual(run(k, out_t, a_t, b_t).tolist(), [
+      360.0, 375.0, 390.0,
+      910.0, 950.0, 990.0,
+      1460.0, 1525.0, 1590.0,
+    ])
+
+  def test_run_fragment_clear_store_2x2(self):
+    k = KernelBuilder("fragment_clear_store_2x2", ("out",))
+    out = k.buffer("out", shape=(2, 2))
+    acc = k.fragment("acc", (2, 2), "float32")
+    k.clear(acc)
+    k.store_fragment(acc, out, (0, 0))
+    out_t = Tensor.empty(4)
+    self.assertEqual(run(k, out_t).tolist(), [0.0, 0.0, 0.0, 0.0])
+
+  def test_run_fragment_gemm_2x2x3(self):
+    k = KernelBuilder("fragment_gemm_2x2x3", ("out", "a", "b"))
+    k.alloc("as", 6, "float32")
+    k.alloc("bs", 6, "float32")
+    out = k.buffer("out", shape=(2, 2))
+    a = k.buffer("a", shape=(2, 3))
+    b = k.buffer("b", shape=(3, 2))
+    as_tile = k.buffer("as", shape=(2, 3))
+    bs_tile = k.buffer("bs", shape=(3, 2))
+    acc = k.fragment("acc", (2, 2), "float32")
+    k.copy(a, as_tile, shape=(2, 3), stride=3)
+    k.copy(b, bs_tile, shape=(3, 2), stride=2)
+    k.barrier()
+    k.clear(acc)
+    k.gemm(as_tile, bs_tile, acc)
+    k.store_fragment(acc, out, (0, 0))
+    a_t = Tensor([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+    b_t = Tensor([7.0, 8.0, 9.0, 10.0, 11.0, 12.0])
+    out_t = Tensor.empty(4)
+    self.assertEqual(run(k, out_t, a_t, b_t).tolist(), [58.0, 64.0, 139.0, 154.0])
 
   def test_run_guarded_vecadd_2d(self):
     k = KernelBuilder("guarded_vecadd_2d", ("out", "a", "b"))

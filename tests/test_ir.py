@@ -1,5 +1,5 @@
 import unittest
-from tilegrad.ir import Add, Alloc, And, Arg, Barrier, Const, FloorDiv, Kernel, Load, LoadIf, Lt, Mod, Mul, Range, Store, BinaryExpr, Expr, KernelOp, Stmt, Set, SetIf, Sub, Index2D, Var, and_, lt
+from tilegrad.ir import Add, Alloc, And, Arg, Barrier, Const, FloorDiv, FragmentAlloc, FragmentClear, FragmentGemm, FragmentStore, Kernel, Load, LoadIf, Lt, Mod, Mul, Range, Store, BinaryExpr, Expr, KernelOp, Stmt, Set, SetIf, Sub, Index2D, Var, and_, lt
 
 class TestIR(unittest.TestCase):
   def test_arg(self):
@@ -87,9 +87,13 @@ class TestIR(unittest.TestCase):
     self.assertIsInstance(Barrier(), Stmt)
     self.assertIsInstance(Set("out", 0, 1), Stmt)
     self.assertIsInstance(SetIf(Lt(Var("i"), 3), "out", Var("i"), 1), Stmt)
+    self.assertIsInstance(FragmentClear("acc"), Stmt)
+    self.assertIsInstance(FragmentGemm("as", "bs", "acc", (2, 3), (3, 2), (2, 2)), Stmt)
+    self.assertIsInstance(FragmentStore("acc", "out", 0, 0, 3), Stmt)
   
   def test_kernel_op_markers(self):
     self.assertIsInstance(Alloc("smem", 4, "float32", "shared"), KernelOp)
+    self.assertIsInstance(FragmentAlloc("acc", (2, 2), "float32"), KernelOp)
     self.assertIsInstance(Range("i", 4, ()), KernelOp)
     self.assertIsInstance(Barrier(), KernelOp)
   
@@ -133,6 +137,46 @@ class TestIR(unittest.TestCase):
     i = Var("i")
     j = Var("j")
     self.assertEqual((i < 4) & (j < 3), And(Lt(i, 4), Lt(j, 3)))
+
+  def test_fragment_alloc(self):
+    alloc = FragmentAlloc("acc", (2, 2), "float32")
+    self.assertEqual(alloc.name, "acc")
+    self.assertEqual(alloc.shape, (2, 2))
+    self.assertEqual(alloc.dtype, "float32")
+    self.assertIsInstance(alloc, KernelOp)
+
+  def test_fragment_clear(self):
+    stmt = FragmentClear("acc")
+    self.assertEqual(stmt.buffer, "acc")
+    self.assertIsInstance(stmt, Stmt)
+
+  def test_fragment_gemm(self):
+    stmt = FragmentGemm("as", "bs", "acc", (2, 3), (3, 2), (2, 2))
+    self.assertEqual(stmt.a, "as")
+    self.assertEqual(stmt.b, "bs")
+    self.assertEqual(stmt.c, "acc")
+    self.assertEqual(stmt.a_shape, (2, 3))
+    self.assertEqual(stmt.b_shape, (3, 2))
+    self.assertEqual(stmt.c_shape, (2, 2))
+    self.assertFalse(stmt.trans_a)
+    self.assertFalse(stmt.trans_b)
+    self.assertIsInstance(stmt, Stmt)
+
+  def test_fragment_gemm_transpose_flags(self):
+    stmt = FragmentGemm("as", "bs", "acc", (3, 2), (2, 3), (2, 2), trans_a=True, trans_b=True)
+    self.assertTrue(stmt.trans_a)
+    self.assertTrue(stmt.trans_b)
+
+  def test_fragment_store(self):
+    guard = Lt(Var("i"), 3)
+    stmt = FragmentStore("acc", "out", Var("i"), Var("j"), 3, guard)
+    self.assertEqual(stmt.src, "acc")
+    self.assertEqual(stmt.dst, "out")
+    self.assertEqual(stmt.dst_row, Var("i"))
+    self.assertEqual(stmt.dst_col, Var("j"))
+    self.assertEqual(stmt.dst_stride, 3)
+    self.assertEqual(stmt.guard, guard)
+    self.assertIsInstance(stmt, Stmt)
 
 if __name__ == "__main__":
   unittest.main()

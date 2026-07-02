@@ -1,4 +1,4 @@
-from tilegrad.ir import Add, Alloc, Arg, Barrier, Index2D, Kernel, Load, LoadIf, Mul, Range, Set, SetIf, Store, StoreIf, Var
+from tilegrad.ir import Add, Alloc, Arg, Barrier, FragmentAlloc, FragmentClear, FragmentGemm, FragmentStore, Index2D, Kernel, Load, LoadIf, Mul, Range, Set, SetIf, Store, StoreIf, Var
 
 class BufferRef:
   def __init__(self, builder, name, shape=None):
@@ -14,7 +14,15 @@ class BufferRef:
   def __getitem__(self, index): return Load(self.name, self._index(index))
   def __setitem__(self, index, value): self.builder.set(self.name, self._index(index), value)
 
+class FragmentRef:
+  def __init__(self, builder, name, shape, dtype):
+    self.builder = builder
+    self.name = name
+    self.shape = shape
+    self.dtype = dtype
+
 def _buffer_name(x): return x.name if isinstance(x, BufferRef) else x
+def _fragment_name(x): return x.name if isinstance(x, FragmentRef) else x
 def _buffer_index(buffer, index): return buffer._index(index) if isinstance(buffer, BufferRef) else index
 
 def _flatten_nd_index(indices, shape):
@@ -46,6 +54,15 @@ class KernelBuilder:
   def buffer(self, name, shape=None): return BufferRef(self, name, shape)
 
   def buffers(self, *names): return tuple(self.buffer(name) for name in names)
+
+  def fragment(self, name, shape, dtype):
+    if self._range_stack: raise ValueError("fragment must be top-level")
+    if not isinstance(shape, tuple) or len(shape) != 2:
+      raise ValueError("fragment shape must be a 2D tuple")
+    if not all(isinstance(dim, int) and dim > 0 for dim in shape):
+      raise ValueError(f"fragment shape must contain positive integers: {shape}")
+    self._body.append(FragmentAlloc(_fragment_name(name), shape, dtype))
+    return FragmentRef(self, _fragment_name(name), shape, dtype)
   
   def load(self, buffer, index): return Load(_buffer_name(buffer), _buffer_index(buffer, index))
 
@@ -55,6 +72,27 @@ class KernelBuilder:
 
   def set_if(self, cond, buffer, index, value):
     self._current_body().append(SetIf(cond, _buffer_name(buffer), _buffer_index(buffer, index), value))
+
+  def clear(self, fragment):
+    self._current_body().append(FragmentClear(_fragment_name(fragment)))
+
+  def gemm(self, a, b, c, trans_a=False, trans_b=False):
+    if not isinstance(a, BufferRef): raise TypeError("gemm A must be a buffer reference")
+    if not isinstance(b, BufferRef): raise TypeError("gemm B must be a buffer reference")
+    if not isinstance(c, FragmentRef): raise TypeError("gemm C must be a fragment reference")
+    if a.shape is None or b.shape is None: raise ValueError("gemm inputs require shapes")
+    self._current_body().append(FragmentGemm(a.name, b.name, c.name, a.shape, b.shape, c.shape, trans_a, trans_b))
+
+  def store_fragment(self, src, dst, dst_origin, guard=None, bounds=None):
+    if not isinstance(src, FragmentRef): raise TypeError("store_fragment src must be a fragment reference")
+    if not isinstance(dst, BufferRef): raise TypeError("store_fragment dst must be a buffer reference")
+    if dst.shape is None or not isinstance(dst.shape, tuple) or len(dst.shape) != 2:
+      raise ValueError("store_fragment dst must be a 2D buffer reference")
+    if not isinstance(dst_origin, tuple) or len(dst_origin) != 2:
+      raise ValueError("store_fragment dst_origin must be a 2D tuple")
+    if bounds is not None and (not isinstance(bounds, tuple) or len(bounds) != 2):
+      raise ValueError("store_fragment bounds must be a 2D tuple")
+    self._current_body().append(FragmentStore(src.name, dst.name, dst_origin[0], dst_origin[1], dst.shape[1], guard, bounds))
 
   def store(self, buffer, index, value):
     if not self._range_stack: raise ValueError("store requires an active range")

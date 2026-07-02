@@ -1,10 +1,179 @@
 import unittest
 from tinygrad import Tensor
 from tilegrad.builder import KernelBuilder
-from tilegrad.ir import Add, Alloc, Arg, Barrier, Index2D, Kernel, Load, LoadIf, Mul, Range, Set, SetIf, Store, Var, And, Lt, StoreIf
+from tilegrad.ir import Add, Alloc, Arg, Barrier, FragmentAlloc, FragmentClear, FragmentGemm, FragmentStore, Index2D, Kernel, Load, LoadIf, Mul, Range, Set, SetIf, Store, Var, And, Lt, StoreIf
 from tilegrad.lowerer import lower_kernel
 
 class TestBuilder(unittest.TestCase):
+  def test_builder_fragment_alloc_ir(self):
+    k = KernelBuilder("fragment_alloc", ("out",))
+    acc = k.fragment("acc", (2, 2), "float32")
+    self.assertEqual(acc.name, "acc")
+    self.assertEqual(acc.shape, (2, 2))
+    self.assertEqual(acc.dtype, "float32")
+    expected = Kernel(
+      "fragment_alloc",
+      (Arg("out"),),
+      (FragmentAlloc("acc", (2, 2), "float32"),),
+    )
+    self.assertEqual(k.build(), expected)
+
+  def test_builder_fragment_clear_ir(self):
+    k = KernelBuilder("fragment_clear", ("out",))
+    acc = k.fragment("acc", (2, 2), "float32")
+    with k.range("i", 1):
+      k.clear(acc)
+    expected = Kernel(
+      "fragment_clear",
+      (Arg("out"),),
+      (
+        FragmentAlloc("acc", (2, 2), "float32"),
+        Range("i", 1, (FragmentClear("acc"),)),
+      ),
+    )
+    self.assertEqual(k.build(), expected)
+
+  def test_builder_fragment_gemm_ir(self):
+    k = KernelBuilder("fragment_gemm", ("out",))
+    k.alloc("as", 6, "float32")
+    k.alloc("bs", 6, "float32")
+    as_tile = k.buffer("as", shape=(2, 3))
+    bs_tile = k.buffer("bs", shape=(3, 2))
+    acc = k.fragment("acc", (2, 2), "float32")
+    with k.range("i", 1):
+      k.gemm(as_tile, bs_tile, acc)
+    expected = Kernel(
+      "fragment_gemm",
+      (Arg("out"),),
+      (
+        Alloc("as", 6, "float32", "shared"),
+        Alloc("bs", 6, "float32", "shared"),
+        FragmentAlloc("acc", (2, 2), "float32"),
+        Range("i", 1, (FragmentGemm("as", "bs", "acc", (2, 3), (3, 2), (2, 2)),)),
+      ),
+    )
+    self.assertEqual(k.build(), expected)
+
+  def test_builder_fragment_gemm_transpose_flags_ir(self):
+    k = KernelBuilder("fragment_gemm_transpose", ("out",))
+    k.alloc("as", 6, "float32")
+    k.alloc("bs", 6, "float32")
+    as_tile = k.buffer("as", shape=(3, 2))
+    bs_tile = k.buffer("bs", shape=(2, 3))
+    acc = k.fragment("acc", (2, 2), "float32")
+    with k.range("i", 1):
+      k.gemm(as_tile, bs_tile, acc, trans_a=True, trans_b=True)
+    expected = Kernel(
+      "fragment_gemm_transpose",
+      (Arg("out"),),
+      (
+        Alloc("as", 6, "float32", "shared"),
+        Alloc("bs", 6, "float32", "shared"),
+        FragmentAlloc("acc", (2, 2), "float32"),
+        Range("i", 1, (FragmentGemm("as", "bs", "acc", (3, 2), (2, 3), (2, 2), True, True),)),
+      ),
+    )
+    self.assertEqual(k.build(), expected)
+
+  def test_builder_fragment_store_ir(self):
+    k = KernelBuilder("fragment_store", ("out",))
+    out = k.buffer("out", shape=(3, 3))
+    acc = k.fragment("acc", (2, 2), "float32")
+    with k.range("bi", 2) as bi:
+      with k.range("bj", 2) as bj:
+        k.store_fragment(acc, out, (bi * 2, bj * 2), guard=(bi < 2) & (bj < 2))
+    expected = Kernel(
+      "fragment_store",
+      (Arg("out"),),
+      (
+        FragmentAlloc("acc", (2, 2), "float32"),
+        Range("bi", 2, (
+          Range("bj", 2, (
+            FragmentStore("acc", "out", Mul(Var("bi"), 2), Mul(Var("bj"), 2), 3, And(Lt(Var("bi"), 2), Lt(Var("bj"), 2))),
+          )),
+        )),
+      ),
+    )
+    self.assertEqual(k.build(), expected)
+
+  def test_builder_fragment_store_bounds_ir(self):
+    k = KernelBuilder("fragment_store_bounds", ("out",))
+    out = k.buffer("out", shape=(3, 3))
+    acc = k.fragment("acc", (2, 2), "float32")
+    with k.range("bi", 2) as bi:
+      with k.range("bj", 2) as bj:
+        k.store_fragment(acc, out, (bi * 2, bj * 2), bounds=(3, 3))
+    expected = Kernel(
+      "fragment_store_bounds",
+      (Arg("out"),),
+      (
+        FragmentAlloc("acc", (2, 2), "float32"),
+        Range("bi", 2, (
+          Range("bj", 2, (
+            FragmentStore("acc", "out", Mul(Var("bi"), 2), Mul(Var("bj"), 2), 3, None, (3, 3)),
+          )),
+        )),
+      ),
+    )
+    self.assertEqual(k.build(), expected)
+
+  def test_fragment_inside_range_fails(self):
+    k = KernelBuilder("bad_fragment", ("out",))
+    with k.range("i", 1):
+      with self.assertRaisesRegex(ValueError, "fragment must be top-level"):
+        k.fragment("acc", (2, 2), "float32")
+
+  def test_fragment_shape_must_be_2d_tuple(self):
+    k = KernelBuilder("bad_fragment_shape", ("out",))
+    with self.assertRaisesRegex(ValueError, "fragment shape must be a 2D tuple"):
+      k.fragment("acc", 4, "float32")
+
+  def test_fragment_shape_must_be_positive_ints(self):
+    k = KernelBuilder("bad_fragment_shape", ("out",))
+    with self.assertRaisesRegex(ValueError, "fragment shape must contain positive integers"):
+      k.fragment("acc", (2, 0), "float32")
+
+  def test_gemm_requires_refs(self):
+    k = KernelBuilder("bad_gemm", ("out",))
+    acc = k.fragment("acc", (2, 2), "float32")
+    with self.assertRaisesRegex(TypeError, "gemm A must be a buffer reference"):
+      k.gemm("as", "bs", acc)
+
+  def test_gemm_inputs_require_shapes(self):
+    k = KernelBuilder("bad_gemm_shape", ("out",))
+    a = k.buffer("as")
+    b = k.buffer("bs", shape=(3, 2))
+    acc = k.fragment("acc", (2, 2), "float32")
+    with self.assertRaisesRegex(ValueError, "gemm inputs require shapes"):
+      k.gemm(a, b, acc)
+
+  def test_store_fragment_requires_fragment_src(self):
+    k = KernelBuilder("bad_store_fragment", ("out",))
+    out = k.buffer("out", shape=(3, 3))
+    with self.assertRaisesRegex(TypeError, "store_fragment src must be a fragment reference"):
+      k.store_fragment("acc", out, (0, 0))
+
+  def test_store_fragment_requires_2d_dst_shape(self):
+    k = KernelBuilder("bad_store_fragment_dst", ("out",))
+    out = k.buffer("out")
+    acc = k.fragment("acc", (2, 2), "float32")
+    with self.assertRaisesRegex(ValueError, "store_fragment dst must be a 2D buffer reference"):
+      k.store_fragment(acc, out, (0, 0))
+
+  def test_store_fragment_requires_2d_origin(self):
+    k = KernelBuilder("bad_store_fragment_origin", ("out",))
+    out = k.buffer("out", shape=(3, 3))
+    acc = k.fragment("acc", (2, 2), "float32")
+    with self.assertRaisesRegex(ValueError, "store_fragment dst_origin must be a 2D tuple"):
+      k.store_fragment(acc, out, 0)
+
+  def test_store_fragment_requires_2d_bounds(self):
+    k = KernelBuilder("bad_store_fragment_bounds", ("out",))
+    out = k.buffer("out", shape=(3, 3))
+    acc = k.fragment("acc", (2, 2), "float32")
+    with self.assertRaisesRegex(ValueError, "store_fragment bounds must be a 2D tuple"):
+      k.store_fragment(acc, out, (0, 0), bounds=3)
+
   def test_builder_copy_ir(self):
     k = KernelBuilder("copy", ("out", "inp"))
     with k.range("i", "out.numel"): k.store("out", "i", k.load("inp", "i"))
