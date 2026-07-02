@@ -1,0 +1,231 @@
+# TileGrad Next Roadmap
+
+TileGrad now supports the first meaningful GPU execution model on top of tinygrad UOps:
+
+- `grid(...)` lowers to `AxisType.GLOBAL` and GPU block ids.
+- `threads(...)` / `parallel(...)` lowers to `AxisType.LOCAL` and GPU thread ids.
+- `range(..., axis="unroll")` lowers to `AxisType.UNROLL` and can produce vectorized codegen.
+- Shared memory, barriers, guarded edge loads/stores, and register accumulation work in grid/thread GEMM examples.
+
+The next work should focus on making this model ergonomic, reusable, and measurable rather than adding unrelated syntax.
+
+## Phase 1: Stabilize The Axis Model
+
+Goal: make grid/thread/unroll semantics official and easy to understand.
+
+Tasks:
+
+- Keep `README.md` current with `grid`, `blocks`, `threads`, `parallel`, and `unroll` semantics.
+- Add quick examples for the current flagship kernels.
+- Rename or clarify old examples that use `parallel`, since `parallel()` now means local thread axes.
+- Consider renaming `_parallel_counter` to `_axes_counter` in `KernelBuilder`.
+- Add validation for empty axis contexts, rejecting `k.grid()` and `k.threads()` with no extents.
+- Format `AXIS_TYPES` in `lowerer.py` as a normal multiline mapping.
+- Add a test that `blocks()` aliases `grid()`.
+
+Execution plan:
+
+1. Keep the work local to `tilegrad`.
+   `tinygrad` already exposes the needed `AxisType.GLOBAL`, `AxisType.LOCAL`, and `AxisType.UNROLL` values, and its GPU dimension lowering already consumes global/local ranges.
+
+2. Rename the internal builder counter.
+   Change `KernelBuilder._parallel_counter` to `_axes_counter`, since the counter is shared by `grid()` and `threads()` and `parallel()` is now only a local-thread alias.
+
+3. Reject empty axis contexts at the builder API boundary.
+   Make `k.grid()`, `k.blocks()`, `k.threads()`, and `k.parallel()` with no extents raise a clear `ValueError`, instead of silently producing an empty tuple and no ranges.
+
+4. Add focused builder tests.
+   Cover `blocks()` aliasing `grid()`, empty `grid()` rejection, empty `threads()` rejection, and optionally empty `parallel()` rejection through the alias.
+
+5. Keep IR validation focused on axis names.
+   Existing validation should continue accepting `loop`, `reduce`, `global`, `local`, and `unroll`; empty axis-context rejection belongs in the builder tests, not IR validation.
+
+6. Format `AXIS_TYPES` in `lowerer.py` as a normal multiline mapping.
+   This is readability-only and should not change behavior.
+
+7. Clarify old `parallel` examples.
+   Prefer minimal documentation updates first: explain that `parallel()` is retained as an alias for `threads()` / local axes. Rename old files only if they are actively misleading in README or examples lists.
+
+8. Refresh README axis documentation and quick examples.
+   Keep the execution-axis table current, explicitly describe `blocks()` as a `grid()` alias, and make the flagship grid/thread/unroll examples easy to find.
+
+9. Verify with targeted tests first.
+   Run `python3 -m pytest tests/test_builder.py tests/test_validate.py tests/test_lowerer.py`, then run the full `tests/` suite if those pass.
+
+## Phase 2: Upgrade `copy()`
+
+Goal: move toward a small, inspectable TileGrad equivalent of TileLang's `T.copy`.
+
+Current limitations:
+
+- `copy()` supports only 1D and 2D.
+- No destination offsets.
+- No guard/fill support.
+- No threaded copy policy.
+- No shape inference from buffer refs.
+- No async or pipeline support.
+
+Target API direction:
+
+```python
+k.copy(
+  src,
+  dst,
+  shape=(BM, BK),
+  src_origin=(row, col),
+  dst_origin=(0, 0),
+  src_stride=K,
+  dst_stride=BK,
+  guard=(row < M) & (col < K),
+  fill=0,
+)
+```
+
+Initial correctness targets:
+
+- 1D, 2D, and 3D copies.
+- Guarded global-to-shared copies.
+- Shared-to-global copies.
+- Edge tile zero-fill.
+- Destination offsets.
+- Thread-local copy patterns using `threads(...)`.
+
+## Phase 3: Canonical Tiled GEMM
+
+Goal: create one flagship GEMM that represents the intended TileGrad programming model.
+
+Start with:
+
+- `M=3`, `N=3`, `K=5`
+- `BM=2`, `BN=2`, `BK=3`
+- `grid(ceildiv(M, BM), ceildiv(N, BN))`
+- `threads(BM, BN)`
+- one output element per local lane
+- shared A/B tiles
+- K-tail guards
+- M/N edge guards
+- barrier between copy and compute
+- guarded output store
+
+Then generalize into a helper/factory:
+
+```python
+def tiled_gemm(M, N, K, BM=2, BN=2, BK=3):
+  ...
+  return k
+```
+
+Test cases:
+
+- exact tile sizes
+- M/N edge tiles
+- K tail
+- non-square M/N
+- transposed B later
+
+## Phase 4: Benchmarks
+
+Goal: measure before optimizing.
+
+Add small benchmark scripts comparing:
+
+- TileGrad scalar loop GEMM
+- TileGrad shared/register GEMM
+- TileGrad grid/thread output-lane GEMM
+- TileGrad fragment GEMM
+- tinygrad `Tensor.matmul`
+- optional raw tinygrad custom UOp baselines
+
+Measure:
+
+- correctness
+- compile time
+- runtime
+- generated launch dimensions
+- effective GFLOPS for larger shapes
+
+Initial benchmark sizes:
+
+- `64x64x64`
+- `128x128x128`
+- `256x256x256`
+
+## Phase 5: Fragment Direction
+
+Goal: decide how TileGrad fragments should evolve.
+
+Current state:
+
+- `FragmentGemm` expands to scalar register operations.
+- This is useful for correctness and inspectability.
+- It is not a tensor-core path.
+
+Recommended path:
+
+- Keep scalar fragment expansion as the default.
+- Add tests for fragment GEMM under `grid` and `threads`.
+- Add a shape/dtype gate for intrinsic lowering later.
+- Prototype one tinygrad `Ops.WMMA` lowering for a single supported shape and dtype.
+
+Do not start with a general WMMA implementation. Start with one backend-supported case.
+
+## Phase 6: Shape And Symbolic Dimensions
+
+Goal: avoid hardcoding every kernel shape.
+
+Possible API direction:
+
+```python
+M = k.dim("M")
+N = k.dim("N")
+K = k.dim("K")
+```
+
+or:
+
+```python
+k.buffer("a", shape=("M", "K"))
+```
+
+First practical step:
+
+- Support shape-derived dimensions such as `"a.shape.0"` and `"a.shape.1"`.
+- Add a small `ceildiv` expression helper.
+- Use these for grid dimensions in examples.
+
+## Phase 7: Pipeline Later
+
+Goal: eventually approach TileLang's `T.Pipelined` model.
+
+Do not implement real pipelining yet. Prerequisites:
+
+- upgraded `copy()`
+- canonical GEMM
+- benchmark harness
+- stable shared/barrier dependency behavior
+
+Future API direction:
+
+```python
+with k.pipelined("ko", KTILES, stages=2) as ko:
+  ...
+```
+
+Initial implementation can be syntax-only or validation-only. Async copy, wait groups, double buffering, and stage scheduling should come later.
+
+## Priority Order
+
+1. Stabilize and document the axis model.
+2. Upgrade `copy()` with guards, offsets, and threaded patterns.
+3. Build one canonical grid/thread tiled GEMM.
+4. Add benchmarks.
+5. Extend fragment GEMM coverage under grid/thread axes.
+6. Prototype one WMMA lowering path.
+7. Add shape/dim ergonomics.
+8. Explore pipeline syntax and double buffering.
+
+## Immediate Recommendation
+
+Focus next on `copy()`.
+
+The execution-axis model is working. The biggest friction in every tiled kernel is now hand-written shared-memory movement. A small, correct, inspectable `copy()` upgrade will make GEMM and future attention-style kernels much easier to write and benchmark.

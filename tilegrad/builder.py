@@ -45,7 +45,7 @@ class KernelBuilder:
     self._body = []
     self._range_stack = []
     self._copy_counter = 0
-    self._parallel_counter = 0
+    self._axes_counter = 0
 
   def _current_body(self): return self._range_stack[-1] if self._range_stack else self._body 
 
@@ -161,6 +161,7 @@ class _RangeContext:
 
 class _AxesContext:
   def __init__(self, builder, prefix, extents, axis):
+    if not extents: raise ValueError("axis context requires at least one extent")
     self.builder = builder
     self.prefix = prefix
     self.extents = extents
@@ -168,8 +169,8 @@ class _AxesContext:
     self.names = None
 
   def __enter__(self):
-    n = self.builder._parallel_counter
-    self.builder._parallel_counter += 1
+    n = self.builder._axes_counter
+    self.builder._axes_counter += 1
     self.names = tuple(f"{self.prefix}{n}_i{i}" for i in range(len(self.extents)))
     self.builder._range_stack.append([])
     vars = tuple(Var(name) for name in self.names)

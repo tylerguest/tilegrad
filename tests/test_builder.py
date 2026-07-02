@@ -911,5 +911,42 @@ class TestBuilder(unittest.TestCase):
     )
     self.assertEqual(k.build(), expected)
 
+  def test_builder_blocks_aliases_grid_ir(self):
+    k = KernelBuilder("blocks", ("out",))
+    with k.blocks(2, 3) as (bx, by):
+      k.store("out", Add(Mul(bx, 3), by), 1)
+    expected = Kernel(
+      "blocks",
+      (Arg("out"),),
+      (
+        Range("_g0_i0", 2, (
+          Range("_g0_i1", 3, (
+            Store("out", Add(Mul(Var("_g0_i0"), 3), Var("_g0_i1")), 1),
+          ), "global"),
+        ), "global"),
+      ),
+    )
+    self.assertEqual(k.build(), expected)
+  
+  def test_empty_grid_fails(self):
+    k = KernelBuilder("bad_empty_grid", ("out",))
+    with self.assertRaisesRegex(ValueError, "axis context requires at least one extent"):
+      k.grid()
+  
+  def test_empty_blocks_fails(self):
+    k = KernelBuilder("bad_empty_blocks", ("out",))
+    with self.assertRaisesRegex(ValueError, "axis context requires at least one extent"):
+      k.blocks()
+
+  def test_empty_threads_fails(self):
+    k = KernelBuilder("bad_empty_threads", ("out",))
+    with self.assertRaisesRegex(ValueError, "axis context requires at least one extent"):
+      k.threads()
+  
+  def test_empty_parallel_fails(self):
+    k = KernelBuilder("bad_empty_parallel", ("out",))
+    with self.assertRaisesRegex(ValueError, "axis context requires at least one extent"):
+      k.parallel()
+
 if __name__ == "__main__":
   unittest.main()
