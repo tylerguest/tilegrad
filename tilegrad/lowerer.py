@@ -1,7 +1,7 @@
 from tinygrad.dtype import AddrSpace, Invalid, dtypes
 from tinygrad.uop.ops import AxisType, KernelInfo, UOp
 from tilegrad.fragments import expand_fragments
-from tilegrad.ir import Add, Alloc, And, Barrier, Const, Eq, FloorDiv, Ge, Gt, Index2D, Le, Load, LoadIf, Lt, Mod, Mul, Ne, Not, Or, Range, Set, SetIf, Store, StoreIf, Sub, Var
+from tilegrad.ir import Add, Alloc, And, Barrier, BinaryExpr, Const, Eq, FloorDiv, Ge, Gt, Index2D, Le, Load, LoadIf, Lt, Mod, Mul, Ne, Not, Or, Range, Set, SetIf, Store, StoreIf, Sub, Var
 from tilegrad.unroll import unroll_register_tiles
 from tilegrad.validate import validate_kernel
 
@@ -28,6 +28,16 @@ def _dedup_ranges(*ranges):
   for r in ranges:
     if r is not None and r not in out: out.append(r)
   return tuple(out)
+
+def _expr_load_buffers(expr):
+  if isinstance(expr, Load): return {expr.buffer}
+  if isinstance(expr, LoadIf): return {expr.buffer} | _expr_load_buffers(expr.cond) | _expr_load_buffers(expr.index)
+  if isinstance(expr, Index2D): return _expr_load_buffers(expr.row) | _expr_load_buffers(expr.col) | _expr_load_buffers(expr.stride)
+  if isinstance(expr, BinaryExpr): return _expr_load_buffers(expr.lhs) | _expr_load_buffers(expr.rhs)
+  if isinstance(expr, Not): return _expr_load_buffers(expr.x)
+  return set()
+
+def _after_deps(buf): return buf.src[1:] if isinstance(buf, UOp) and buf.op.name == "AFTER" else ()
 
 def lower_load(expr, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode):
   idx = lower_expr(expr.index, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode)
@@ -103,13 +113,16 @@ def _strip_after(buf):
   while isinstance(buf, UOp) and buf.op.name == "AFTER": buf = buf.src[0]
   return buf
 
-def lower_store_if(stmt, env, effects, sink_effects, buffer_effects, pending_shared, store_state, indices, active_ranges):
+def lower_store_if(stmt, env, effects, sink_effects, buffer_effects, pending_shared, store_state, shared_read_effects, indices, active_ranges):
   cond = lower_expr(stmt.cond, env, indices)
   idx = lower_expr(stmt.index, env, indices)
   val = lower_expr(stmt.value, env, indices)
   base = env[stmt.buffer]
   needs_order = _needs_store_order(stmt, active_ranges, store_state)
-  buf = (base if needs_order else _strip_after(base)).flatten()
+  if base.addrspace is AddrSpace.LOCAL: 
+    buf = base.flatten()
+    for dep in shared_read_effects.get(stmt.buffer, ()): buf = buf.after(dep)
+  else: buf = (base if needs_order else _strip_after(base)).flatten()
   if needs_order: buf = buf.after(buffer_effects[stmt.buffer])
   if isinstance(val, UOp) and val.dtype != base.dtype.base: val = val.cast(base.dtype.base)
   idx = lower_index(idx)
@@ -126,12 +139,15 @@ def lower_store_if(stmt, env, effects, sink_effects, buffer_effects, pending_sha
     sink_effects.append(ended)
     env[stmt.buffer] = base.after(ended)
 
-def lower_store(stmt, env, effects, sink_effects, buffer_effects, pending_shared, store_state, indices, active_ranges):
+def lower_store(stmt, env, effects, sink_effects, buffer_effects, pending_shared, store_state, shared_read_effects, indices, active_ranges):
   idx = lower_expr(stmt.index, env, indices)
   val = lower_expr(stmt.value, env, indices)
   base = env[stmt.buffer]
   needs_order = _needs_store_order(stmt, active_ranges, store_state)
-  buf = (base if needs_order else _strip_after(base)).flatten()
+  if base.addrspace is AddrSpace.LOCAL: 
+    buf = base.flatten()
+    for dep in shared_read_effects.get(stmt.buffer, ()): buf = buf.after(dep)
+  else: buf = (base if needs_order else _strip_after(base)).flatten()
   if needs_order: buf = buf.after(buffer_effects[stmt.buffer])
   if isinstance(val, UOp) and val.dtype != base.dtype.base: val = val.cast(base.dtype.base)
   effect = buf.index(lower_index(idx), ptr=True).store(val)
@@ -146,7 +162,7 @@ def lower_store(stmt, env, effects, sink_effects, buffer_effects, pending_shared
     sink_effects.append(ended)
     env[stmt.buffer] = base.after(ended)
 
-def lower_set(stmt, env, updated_buffers, local_updated, indices, active_ranges, axis, register_scopes, cond=None):
+def lower_set(stmt, env, updated_buffers, local_updated, shared_read_effects, indices, active_ranges, axis, register_scopes, cond=None):
   idx = lower_expr(stmt.index, env, indices)
   recurrence_range = active_ranges[-1] if axis == "reduce" and active_ranges else None
   buf = env[stmt.buffer]
@@ -179,6 +195,12 @@ def lower_set(stmt, env, updated_buffers, local_updated, indices, active_ranges,
   else:
     ends = ()
   next_buf = target.set(val, end=ends) if ends else target.set(val)
+  if is_register:
+    deps = _after_deps(next_buf)
+    if deps:
+      for name in _expr_load_buffers(stmt.value):
+        if name in env and env[name].addrspace is AddrSpace.LOCAL:
+          shared_read_effects[name] = _dedup_ranges(*shared_read_effects.get(name, ()), *deps)
   if buf.addrspace is not AddrSpace.REG and isinstance(val, UOp):
     leaked_ranges = [r for r in val.ranges if r not in active_ranges]
     if leaked_ranges: next_buf = next_buf.end(*leaked_ranges)
@@ -186,7 +208,7 @@ def lower_set(stmt, env, updated_buffers, local_updated, indices, active_ranges,
   updated_buffers.add(stmt.buffer)
   local_updated.add(stmt.buffer)
 
-def lower_range(op, env, effects, sink_effects, buffer_effects, pending_shared, store_state, updated_buffers, indices, range_slots, register_scopes, active_ranges=()):
+def lower_range(op, env, effects, sink_effects, buffer_effects, pending_shared, store_state, shared_read_effects, updated_buffers, indices, range_slots, register_scopes, active_ranges=()):
   axis_type = AxisType.REDUCE if op.axis == "reduce" else AxisType.LOOP
   i = UOp.range(lower_shape(op.extent, env), range_slots[0], axis_type)
   range_slots[0] += 1
@@ -195,11 +217,11 @@ def lower_range(op, env, effects, sink_effects, buffer_effects, pending_shared, 
   local_updated = set()
   for stmt in op.body:
     if isinstance(stmt, Range): local_updated |= lower_range(stmt, env, effects, sink_effects, buffer_effects, pending_shared, 
-                                                             store_state, updated_buffers, indices, range_slots, register_scopes, active_ranges)
-    elif isinstance(stmt, Store): lower_store(stmt, env, effects, sink_effects, buffer_effects, pending_shared, store_state, indices, active_ranges)
-    elif isinstance(stmt, StoreIf): lower_store_if(stmt, env, effects, sink_effects, buffer_effects, pending_shared, store_state, indices, active_ranges)
-    elif isinstance(stmt, SetIf): lower_set(stmt, env, updated_buffers, local_updated, indices, active_ranges, op.axis, register_scopes, cond=stmt.cond)
-    elif isinstance(stmt, Set): lower_set(stmt, env, updated_buffers, local_updated, indices, active_ranges, op.axis, register_scopes)
+                                                             store_state, shared_read_effects, updated_buffers, indices, range_slots, register_scopes, active_ranges)
+    elif isinstance(stmt, Store): lower_store(stmt, env, effects, sink_effects, buffer_effects, pending_shared, store_state, shared_read_effects, indices, active_ranges)
+    elif isinstance(stmt, StoreIf): lower_store_if(stmt, env, effects, sink_effects, buffer_effects, pending_shared, store_state, shared_read_effects, indices, active_ranges)
+    elif isinstance(stmt, SetIf): lower_set(stmt, env, updated_buffers, local_updated, shared_read_effects, indices, active_ranges, op.axis, register_scopes, cond=stmt.cond)
+    elif isinstance(stmt, Set): lower_set(stmt, env, updated_buffers, local_updated, shared_read_effects, indices, active_ranges, op.axis, register_scopes)
     elif isinstance(stmt, Barrier): lower_barrier(env, effects, buffer_effects, pending_shared, active_ranges)
     else: raise NotImplementedError(type(stmt).__name__)
   if op.axis == "loop":
@@ -284,6 +306,7 @@ def lower_kernel(kernel, *args: UOp) -> UOp:
   sink_effects = []
   buffer_effects = {}
   store_state = {}
+  shared_read_effects = {}
   pending_shared = []
   updated_buffers = set()
   indices = {}
@@ -293,11 +316,11 @@ def lower_kernel(kernel, *args: UOp) -> UOp:
   register_scopes = {}
   for op in kernel.body:
     if isinstance(op, Alloc): lower_alloc(op, env, shared_slots, register_slots)
-    elif isinstance(op, SetIf): lower_set(op, env, updated_buffers, set(), indices, (), "loop", register_scopes, cond=op.cond)
-    elif isinstance(op, Set): lower_set(op, env, updated_buffers, set(), indices, (), "loop", register_scopes)
-    elif isinstance(op, StoreIf): lower_store_if(op, env, effects, sink_effects, buffer_effects, pending_shared, store_state, indices, ())
-    elif isinstance(op, Store): lower_store(op, env, effects, sink_effects, buffer_effects, pending_shared, store_state, indices, ())
-    elif isinstance(op, Range): lower_range(op, env, effects, sink_effects, buffer_effects, pending_shared, store_state, updated_buffers, indices, range_slots, register_scopes)
+    elif isinstance(op, SetIf): lower_set(op, env, updated_buffers, set(), shared_read_effects, indices, (), "loop", register_scopes, cond=op.cond)
+    elif isinstance(op, Set): lower_set(op, env, updated_buffers, set(), shared_read_effects, indices, (), "loop", register_scopes)
+    elif isinstance(op, StoreIf): lower_store_if(op, env, effects, sink_effects, buffer_effects, pending_shared, store_state, shared_read_effects,indices, ())
+    elif isinstance(op, Store): lower_store(op, env, effects, sink_effects, buffer_effects, pending_shared, store_state, shared_read_effects, indices, ())
+    elif isinstance(op, Range): lower_range(op, env, effects, sink_effects, buffer_effects, pending_shared, store_state, shared_read_effects, updated_buffers, indices, range_slots, register_scopes)
     elif isinstance(op, Barrier): lower_barrier(env, effects, buffer_effects, pending_shared)
     else: raise NotImplementedError(type(op).__name__)
   if pending_shared:
