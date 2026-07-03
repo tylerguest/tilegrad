@@ -280,6 +280,3 @@ DEBUG=6 python3 examples/builder_grid_threads_copy.py
 VIZ=1 python3 examples/ir_shared_copy.py
 ```
 
-## Status
-
-This project is experimental.
