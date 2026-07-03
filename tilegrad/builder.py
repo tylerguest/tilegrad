@@ -1,4 +1,4 @@
-from tilegrad.ir import Add, Alloc, Arg, Barrier, FragmentAlloc, FragmentClear, FragmentGemm, FragmentStore, Index2D, Kernel, Load, LoadIf, Mul, Range, Set, SetIf, Store, StoreIf, Var
+from tilegrad.ir import Add, Alloc, Arg, Barrier, FragmentAlloc, FragmentClear, FragmentGemm, FragmentStore, Index2D, Kernel, Load, LoadIf, Mul, Not, Range, Set, SetIf, Store, StoreIf, Var
 
 class BufferRef:
   def __init__(self, builder, name, shape=None):
@@ -37,6 +37,39 @@ def _flatten_nd_index(indices, shape):
     stride *= dim
     flat = Add(Mul(idx, stride), flat)
   return flat
+
+def _add_if_nonzero(lhs, rhs):
+  return Add(lhs, rhs) if lhs != 0 else rhs
+
+def _origin_at(origin, dim):
+  return origin[dim] if dim < len(origin) else 0
+
+def _copy_src_index(indices, shape, origin, stride):
+  shifted = tuple(_add_if_nonzero(_origin_at(origin, i), idx) for i, idx in enumerate(indices))
+  if len(shape) == 1 and stride is not None and len(origin) >= 2: return Index2D(shifted[0], _origin_at(origin, 1), stride)
+  if len(shape) == 1: return shifted[0]
+  if len(shape) == 2: return Index2D(shifted[0], shifted[1], stride)
+  return _flatten_nd_index(shifted, shape)
+
+def _copy_dst_index(indices, shape, origin, stride):
+  shifted = tuple(_add_if_nonzero(_origin_at(origin, i), idx) for i, idx in enumerate(indices))
+  if len(shape) == 1: return shifted[0]
+  if len(shape) == 2: return Index2D(shifted[0], shifted[1], stride)
+  return _flatten_nd_index(shifted, shape)
+
+def _copy_shape(src, dst, shape):
+  if shape is not None: return shape
+  if isinstance(dst, BufferRef) and dst.shape is not None: return dst.shape
+  if isinstance(src, BufferRef) and src.shape is not None: return src.shape
+  raise ValueError("copy shape is required unless a shaped buffer ref is provided")
+
+def _copy_stride(buffer, stride, shape, name):
+  if len(shape) != 2: return stride
+  if stride is not None: return stride
+  if isinstance(buffer, BufferRef) and buffer.shape is not None and len(buffer.shape) == 2:
+    return buffer.shape[1]
+  if name == "dst": return shape[1]
+  raise ValueError(f"{name}_stride required for 2D copy")
 
 class KernelBuilder:
   def __init__(self, name, args):
@@ -116,31 +149,41 @@ class KernelBuilder:
   
   def range(self, name, extent, axis="loop"): return _RangeContext(self, name, extent, axis)
 
-  def copy(self, src, dst, shape, stride=None, src_row_off=0, src_col_off=0):
-    src = _buffer_name(src)
-    dst = _buffer_name(dst)
+  def copy(self, src, dst, shape=None, stride=None, src_row_off=0, src_col_off=0, src_origin=None, 
+           dst_origin=None, src_stride=None, dst_stride=None, guard=None, fill=None,):
+    src_ref = src
+    dst_ref = dst
+    shape = _copy_shape(src_ref, dst_ref, shape)
+    if not isinstance(shape, tuple): raise TypeError("copy shape must be a tuple")
+    if len(shape) == 0: raise ValueError("copy shape must not be empty")
+    if len(shape) > 3: raise NotImplementedError(f"copy does not support {len(shape)}D")
+    if fill not in (None, 0): raise NotImplementedError("copy only supports fill=0")
+
+    if src_origin is None: src_origin = (src_row_off, src_col_off) if len(shape) >= 2 or stride is not None else (src_col_off,)
+    if dst_origin is None: dst_origin = tuple(0 for _ in shape)
+
+    if src_stride is None: src_stride = stride
+    src_stride = _copy_stride(src_ref, src_stride, shape, "src")
+    dst_stride = _copy_stride(dst_ref, dst_stride, shape, "dst")
+
+    src = _buffer_name(src_ref)
+    dst = _buffer_name(dst_ref)
     n = self._copy_counter
     self._copy_counter += 1
-    body = self._current_body()
-    if len(shape) == 1:
-      name_i0 = f"_c{n}_i0"
-      if stride is None: src_idx = Add(src_col_off, name_i0) if src_col_off != 0 else name_i0
-      else:
-        src_row = Add(src_row_off, name_i0) if src_row_off != 0 else name_i0
-        src_idx = Index2D(src_row, src_col_off, stride)
-      body.append(Range(name_i0, shape[0], (Store(dst, name_i0, Load(src, src_idx)),)))
-    elif len(shape) == 2:
-      if stride is None: raise ValueError("stride required for 2D copy")
-      name_i0 = f"_c{n}_i0"
-      name_i1 = f"_c{n}_i1"
-      src_row = Add(src_row_off, name_i0) if src_row_off != 0 else name_i0
-      src_col = Add(src_col_off, name_i1) if src_col_off != 0 else name_i1
-      body.append(Range(name_i0, shape[0], (
-        Range(name_i1, shape[1], (
-          Store(dst, Index2D(name_i0, name_i1, shape[1]), Load(src, Index2D(src_row, src_col, stride))),
-        )),
-      )))
-    else: raise NotImplementedError(f"copy does not support {len(shape)}D")
+
+    names = tuple(f"_c{n}_i{i}" for i in range(len(shape)))
+    src_idx = _copy_src_index(names, shape, src_origin, src_stride)
+    dst_idx = _copy_dst_index(names, shape, dst_origin, dst_stride)
+
+    if guard is None: stmt = Store(dst, dst_idx, Load(src, src_idx))
+    elif fill == 0: stmt = Store(dst, dst_idx, LoadIf(guard, src, src_idx))
+    else: stmt = StoreIf(guard, dst, dst_idx, Load(src, src_idx))
+
+    body = (stmt,)
+    for name, extent in reversed(tuple(zip(names, shape))):
+      body = (Range(name, extent, body),)
+    self._current_body().extend(body)
+
   def build(self): return Kernel(self.name, self.args, tuple(self._body))
 
 class _RangeContext:

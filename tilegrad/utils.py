@@ -1,0 +1,1 @@
+def ceildiv(a, b): return (a + b - 1) // b

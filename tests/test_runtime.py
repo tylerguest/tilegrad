@@ -1,7 +1,7 @@
 import unittest
 from tinygrad import Tensor
 from tilegrad import KernelBuilder, run
-from tilegrad.ir import Add, Index2D, Kernel, Mul
+from tilegrad.ir import Add, Index2D, Kernel, Mul, Var
 
 class TestRuntime(unittest.TestCase):
   def test_run_copy(self):
@@ -460,6 +460,57 @@ class TestRuntime(unittest.TestCase):
     inp_t = Tensor([0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0])
     out_t = Tensor.empty(8)
     self.assertEqual(run(k, out_t, inp_t).tolist(), [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0])
+
+  def test_run_copy_1d_dst_origin(self):
+    k = KernelBuilder("copy_1d_dst_origin", ("out", "inp"))
+    k.copy("inp", "out", shape=(3,), dst_origin=(1,))
+    out = Tensor([0.0, 0.0, 0.0, 0.0])
+    inp = Tensor([1.0, 2.0, 3.0])
+    self.assertEqual(run(k, out, inp).tolist(), [0.0, 1.0, 2.0, 3.0])
+
+  def test_run_copy_2d_src_origin(self):
+    k = KernelBuilder("copy_2d_src_origin", ("out", "inp"))
+    k.copy("inp", "out", shape=(2, 2), src_origin=(1, 1), src_stride=4, dst_stride=2)
+    inp = Tensor([
+      1.0, 2.0, 3.0, 4.0,
+      5.0, 6.0, 7.0, 8.0,
+      9.0, 10.0, 11.0, 12.0,
+    ])
+    out = Tensor.empty(4)
+    self.assertEqual(run(k, out, inp).tolist(), [6.0, 7.0, 10.0, 11.0])
+
+  def test_run_copy_2d_dst_origin(self):
+    k = KernelBuilder("copy_2d_dst_origin", ("out", "inp"))
+    k.copy("inp", "out", shape=(2, 2), src_stride=2, dst_origin=(1, 1), dst_stride=4)
+    inp = Tensor([1.0, 2.0, 3.0, 4.0])
+    out = Tensor([0.0] * 12)
+    self.assertEqual(run(k, out, inp).tolist(), [
+      0.0, 0.0, 0.0, 0.0,
+      0.0, 1.0, 2.0, 0.0,
+      0.0, 3.0, 4.0, 0.0,
+    ])
+
+  def test_run_copy_guard_fill_zero(self):
+    k = KernelBuilder("copy_guard_fill_zero", ("out", "inp"))
+    with k.range("i", 1):
+      k.copy("inp", "out", shape=(4,), guard=Var("_c0_i0") < 3, fill=0)
+    inp = Tensor([1.0, 2.0, 3.0, 99.0])
+    out = Tensor.empty(4)
+    self.assertEqual(run(k, out, inp).tolist(), [1.0, 2.0, 3.0, 0.0])
+
+  def test_run_copy_3d(self):
+    k = KernelBuilder("copy_3d", ("out", "inp"))
+    out = k.buffer("out", shape=(2, 2, 3))
+    inp = k.buffer("inp", shape=(2, 2, 3))
+    k.copy(inp, out)
+    inp_t = Tensor([
+      1.0, 2.0, 3.0,
+      4.0, 5.0, 6.0,
+      7.0, 8.0, 9.0,
+      10.0, 11.0, 12.0,
+    ])
+    out_t = Tensor.empty(12)
+    self.assertEqual(run(k, out_t, inp_t).tolist(), inp_t.tolist())
 
 if __name__ == "__main__":
   unittest.main()

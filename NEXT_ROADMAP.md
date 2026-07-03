@@ -90,6 +90,53 @@ Initial correctness targets:
 - Destination offsets.
 - Thread-local copy patterns using `threads(...)`.
 
+Execution plan:
+
+1. Keep `copy()` as builder-only syntax expansion.
+   Do not add new IR nodes, lowerer paths, or tinygrad changes for the first upgrade. Expand `copy()` into existing `Range`, `Load`, `LoadIf`, `Store`, and `StoreIf` nodes so the result remains inspectable.
+
+2. Support the new API while preserving current call sites.
+   Add `src_origin`, `dst_origin`, `src_stride`, `dst_stride`, `guard`, and `fill` parameters. Keep the existing `stride`, `src_row_off`, and `src_col_off` parameters as compatibility shims until examples and tests are migrated.
+
+3. Normalize legacy arguments internally.
+   Treat old `stride` as `src_stride` when `src_stride` is not provided. Treat `src_row_off` and `src_col_off` as the default 2D `src_origin` when `src_origin` is not provided. Default `dst_origin` to zero offsets.
+
+4. Add small private helpers in `builder.py`.
+   Add helpers for offset addition, origin lookup, and copy-index construction so the main `copy()` implementation does not grow separate ad hoc branches for every rank.
+
+5. Rewrite `copy()` around generic rank handling.
+   Validate that `shape` is a non-empty tuple. Generate loop names like `_c{n}_i0`, `_c{n}_i1`, and `_c{n}_i2`, build nested `Range`s from the inside out, and support 1D, 2D, and 3D copies.
+
+6. Implement destination offsets and strides.
+   Compute destination indices from `dst_origin` and `dst_stride`, instead of always storing into a zero-origin compact tile. Default 2D `dst_stride` to the destination tile width or destination buffer shape when available.
+
+7. Implement source offsets and strides.
+   Compute source indices from `src_origin` and `src_stride`. Infer 2D source stride from `src.shape[1]` when `src` is a shaped `BufferRef`; otherwise require an explicit stride for 2D source indexing.
+
+8. Add shape inference from buffer refs.
+   If `shape` is omitted, infer it from `dst.shape` when `dst` is a shaped `BufferRef`. Use shaped `BufferRef`s to infer contiguous flattening for 3D copies where possible.
+
+9. Add guarded copy support.
+   Use `LoadIf(guard, src, src_idx)` for guarded loads when zero-fill behavior is requested. Use `StoreIf(guard, dst, dst_idx, Load(src, src_idx))` when the caller wants to skip out-of-bounds stores rather than fill.
+
+10. Start with `fill=0` only.
+    Implement edge-tile zero-fill as the first fill mode. Reject non-zero fill values clearly until conditional value selection is added.
+
+11. Add builder IR tests.
+    Cover 1D copy with `dst_origin`, 2D copy with `src_origin` and `dst_origin`, explicit `src_stride` and `dst_stride`, 3D contiguous copy IR, shape inference from destination `BufferRef`, guarded copy IR, and zero-fill guarded load IR.
+
+12. Add runtime tests.
+    Cover 1D destination-offset copy, 2D global-to-shared copy with source origin, 2D shared-to-global copy with destination origin, 2D guarded edge-tile zero-fill, 3D copy correctness, and one thread-local copy pattern using `threads(...)`.
+
+13. Update examples.
+    Convert `examples/builder_copy_3d.py` to use `k.copy(...)`, add a guarded 2D copy example using `guard` and `fill=0`, and add a grid/thread copy example only if the semantics remain simple and testable.
+
+14. Document `copy()` in README.
+    Add a short section showing the upgraded signature and explaining that `copy()` is synchronous, expands into normal TileGrad loops, supports 1D/2D/3D, supports edge guards and zero-fill, and does not yet implement async copies, coalescing policies, or pipelines.
+
+15. Verify in layers.
+    Run `python3 -m pytest tests/test_builder.py tests/test_runtime.py`, then `python3 -m pytest tests/`, then run the updated copy examples.
+
 ## Phase 3: Canonical Tiled GEMM
 
 Goal: create one flagship GEMM that represents the intended TileGrad programming model.

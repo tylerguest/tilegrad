@@ -4,11 +4,7 @@ from tilegrad import KernelBuilder, run
 k = KernelBuilder("tilegrad_builder_copy_3d", ("out", "inp"))
 out = k.buffer("out", shape=(2, 2, 3))
 inp = k.buffer("inp", shape=(2, 2, 3))
-
-with k.range("b", 2) as b:
-  with k.range("i", 2) as i:
-    with k.range("j", 3) as j:
-      out[b, i, j] = inp[b, i, j]
+k.copy(inp, out)
 
 if __name__ == "__main__":
   inp_t = Tensor([

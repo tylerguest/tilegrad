@@ -947,6 +947,90 @@ class TestBuilder(unittest.TestCase):
     k = KernelBuilder("bad_empty_parallel", ("out",))
     with self.assertRaisesRegex(ValueError, "axis context requires at least one extent"):
       k.parallel()
+  
+  def test_builder_copy_1d_dst_origin_ir(self):
+    k = KernelBuilder("copy_1d_dst_origin", ("out", "inp"))
+    k.copy("inp", "out", shape=(3,), dst_origin=(1,))
+    expected = Kernel(
+      "copy_1d_dst_origin",
+      (Arg("out"), Arg("inp")),
+      (Range("_c0_i0", 3, (
+        Store("out", Add(1, "_c0_i0"), Load("inp", "_c0_i0")),
+      )),),
+    )
+    self.assertEqual(k.build(), expected)
+  
+  def test_builder_copy_2d_origins_ir(self):
+    k = KernelBuilder("copy_2d_origins", ("out", "inp"))
+    k.copy("inp", "out", shape=(2, 3), src_origin=(1, 2), dst_origin=(3, 4), src_stride=8, dst_stride=10)
+    expected = Kernel(
+      "copy_2d_origins",
+      (Arg("out"), Arg("inp")),
+      (Range("_c0_i0", 2, (
+        Range("_c0_i1", 3, (
+          Store(
+            "out",
+            Index2D(Add(3, "_c0_i0"), Add(4, "_c0_i1"), 10),
+            Load("inp", Index2D(Add(1, "_c0_i0"), Add(2, "_c0_i1"), 8)),
+          ),
+        )),
+      )),),
+    )
+    self.assertEqual(k.build(), expected)
 
+  def test_builder_copy_3d_ir(self):
+    k = KernelBuilder("copy_3d", ("out", "inp"))
+    k.copy("inp", "out", shape=(2, 2, 3))
+    expected = Kernel(
+      "copy_3d",
+      (Arg("out"), Arg("inp")),
+      (Range("_c0_i0", 2, (
+        Range("_c0_i1", 2, (
+          Range("_c0_i2", 3, (
+            Store(
+              "out",
+              Add(Mul("_c0_i0", 6), Add(Mul("_c0_i1", 3), "_c0_i2")),
+              Load("inp", Add(Mul("_c0_i0", 6), Add(Mul("_c0_i1", 3), "_c0_i2"))),
+            ),
+          )),
+        )),
+      )),),
+    )
+    self.assertEqual(k.build(), expected)
+
+  def test_builder_copy_infers_shape_from_dst_ref(self):
+    k = KernelBuilder("copy_infer_shape", ("out", "inp"))
+    out = k.buffer("out", shape=(4,))
+    inp = k.buffer("inp")
+    k.copy(inp, out)
+    expected = Kernel(
+      "copy_infer_shape",
+      (Arg("out"), Arg("inp")),
+      (Range("_c0_i0", 4, (
+        Store("out", "_c0_i0", Load("inp", "_c0_i0")),
+      )),),
+    )
+    self.assertEqual(k.build(), expected)
+
+  def test_builder_copy_guard_fill_zero_ir(self):
+    k = KernelBuilder("copy_guard_fill_zero", ("out", "inp"))
+    with k.range("base", 1) as base:
+      k.copy("inp", "out", shape=(4,), src_origin=(base,), guard=Var("_c0_i0") < 3, fill=0)
+    expected = Kernel(
+      "copy_guard_fill_zero",
+      (Arg("out"), Arg("inp")),
+      (Range("base", 1, (
+        Range("_c0_i0", 4, (
+          Store("out", "_c0_i0", LoadIf(Lt(Var("_c0_i0"), 3), "inp", Add(Var("base"), "_c0_i0"))),
+        )),
+      )),),
+    )
+    self.assertEqual(k.build(), expected)
+
+  def test_builder_copy_nonzero_fill_fails(self):
+    k = KernelBuilder("copy_bad_fill", ("out", "inp"))
+    with self.assertRaisesRegex(NotImplementedError, "copy only supports fill=0"):
+      k.copy("inp", "out", shape=(4,), guard=True, fill=1)
+      
 if __name__ == "__main__":
   unittest.main()
