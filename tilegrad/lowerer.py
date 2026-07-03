@@ -5,11 +5,20 @@ from tilegrad.ir import Add, Alloc, And, Barrier, BinaryExpr, Const, Eq, FloorDi
 from tilegrad.unroll import unroll_register_tiles
 from tilegrad.validate import validate_kernel
 
-AXIS_TYPES = { "loop": AxisType.LOOP, "reduce": AxisType.REDUCE, "global": AxisType.GLOBAL, "local": AxisType.LOCAL, "unroll": AxisType.UNROLL, }
+AXIS_TYPES = {
+  "loop": AxisType.LOOP,
+  "reduce": AxisType.REDUCE,
+  "global": AxisType.GLOBAL,
+  "local": AxisType.LOCAL,
+  "unroll": AxisType.UNROLL,
+}
 
 def lower_shape(shape, env):
   if isinstance(shape, int): return shape
   if shape.endswith(".numel"): return env[shape[:-6]].max_numel()
+  if ".shape." in shape:
+    name, dim = shape.rsplit(".shape.", 1)
+    return env[name].shape[int(dim)]
   raise NotImplementedError(shape)
 
 def lower_dtype(dtype):

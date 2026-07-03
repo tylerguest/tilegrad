@@ -369,5 +369,44 @@ class TestValidate(unittest.TestCase):
       )
       validate_kernel(kernel)
 
+  def test_validate_accepts_shape_dim_range(self):
+    kernel = Kernel(
+      "shape_dim_range",
+      (Arg("out"), Arg("inp")),
+      (Range("i", "inp.shape.0", (Store("out", "i", Load("inp", "i")),)),),
+    )
+    validate_kernel(kernel)
+
+  def test_validate_accepts_shape_dim_alloc(self):
+    kernel = Kernel(
+      "shape_dim_alloc",
+      (Arg("out"), Arg("inp")),
+      (
+        Alloc("smem", "inp.shape.0", "float32", "shared"),
+        Range("i", "inp.shape.0", (Store("smem", "i", Load("inp", "i")),)),
+        Barrier(),
+        Range("j", "inp.shape.0", (Store("out", "j", Load("smem", "j")),)),
+      ),
+    )
+    validate_kernel(kernel)
+
+  def test_shape_dim_unknown_buffer_fails(self):
+    kernel = Kernel(
+      "bad_shape_dim",
+      (Arg("out"),),
+      (Range("i", "missing.shape.0", (Store("out", "i", 0),)),),
+    )
+    with self.assertRaisesRegex(ValueError, "unknown buffer: missing"):
+      validate_kernel(kernel)
+
+  def test_shape_dim_invalid_dim_fails(self):
+    kernel = Kernel(
+      "bad_shape_dim",
+      (Arg("out"), Arg("inp")),
+      (Range("i", "inp.shape.x", (Store("out", "i", 0),)),),
+    )
+    with self.assertRaisesRegex(ValueError, "invalid shape dimension"):
+      validate_kernel(kernel)
+
 if __name__ == "__main__":
   unittest.main()

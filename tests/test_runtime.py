@@ -592,5 +592,15 @@ class TestRuntime(unittest.TestCase):
       1460.0, 1525.0, 1590.0,
     ])
 
+  def test_run_pipelined_copy(self):
+    k = KernelBuilder("pipelined_copy", ("out", "inp"))
+    out = k.buffer("out")
+    inp = k.buffer("inp")
+    with k.pipelined("i", 4, stages=2) as i:
+      out[i] = inp[i]
+    inp_t = Tensor([1.0, 2.0, 3.0, 4.0])
+    out_t = Tensor.empty(4)
+    self.assertEqual(run(k, out_t, inp_t).tolist(), [1.0, 2.0, 3.0, 4.0])
+
 if __name__ == "__main__":
   unittest.main()

@@ -149,6 +149,11 @@ class KernelBuilder:
   
   def range(self, name, extent, axis="loop"): return _RangeContext(self, name, extent, axis)
 
+  def pipelined(self, name, extent, stages=2):
+    if not isinstance(stages, int) or stages <= 0:
+      raise ValueError("pipelined stages must be a positive integer")
+    return _RangeContext(self, name, extent, "loop")
+
   def copy(self, src, dst, shape=None, stride=None, src_row_off=0, src_col_off=0, src_origin=None, 
            dst_origin=None, src_stride=None, dst_stride=None, guard=None, fill=None,):
     src_ref = src

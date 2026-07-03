@@ -1031,6 +1031,31 @@ class TestBuilder(unittest.TestCase):
     k = KernelBuilder("copy_bad_fill", ("out", "inp"))
     with self.assertRaisesRegex(NotImplementedError, "copy only supports fill=0"):
       k.copy("inp", "out", shape=(4,), guard=True, fill=1)
+
+  def test_builder_pipelined_ir_matches_loop_range(self):
+    k = KernelBuilder("pipelined", ("out",))
+    with k.pipelined("ko", 2, stages=2) as ko:
+      k.store("out", ko, ko)
+    expected = Kernel(
+      "pipelined",
+      (Arg("out"),),
+      (
+        Range("ko", 2, (
+          Store("out", Var("ko"), Var("ko")),
+        )),
+      ),
+    )
+    self.assertEqual(k.build(), expected)
+
+  def test_pipelined_rejects_zero_stages(self):
+    k = KernelBuilder("bad_pipelined", ("out",))
+    with self.assertRaisesRegex(ValueError, "pipelined stages must be a positive integer"):
+      k.pipelined("ko", 2, stages=0)
+
+  def test_pipelined_rejects_non_int_stages(self):
+    k = KernelBuilder("bad_pipelined", ("out",))
+    with self.assertRaisesRegex(ValueError, "pipelined stages must be a positive integer"):
+      k.pipelined("ko", 2, stages="2")
       
 if __name__ == "__main__":
   unittest.main()

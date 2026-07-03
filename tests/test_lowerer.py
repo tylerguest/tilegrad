@@ -23,6 +23,38 @@ class TestLowerer(unittest.TestCase):
     out = Tensor.empty(4)
     out = out.custom_kernel(inp, fxn=copy_kernel)[0].realize()
     self.assertEqual(out.tolist(), [1.0, 2.0, 3.0, 4.0])
+
+  def test_lower_shape_dim_range_1d(self):
+    def copy_kernel(out, inp):
+      ir = Kernel(
+        "test_shape_dim_range_1d",
+        (Arg("out"), Arg("inp")),
+        (Range("i", "inp.shape.0", (Store("out", "i", Load("inp", "i")),)),),
+      )
+      return lower_kernel(ir, out, inp)
+    inp = Tensor([1.0, 2.0, 3.0, 4.0])
+    out = Tensor.empty(4)
+    out = out.custom_kernel(inp, fxn=copy_kernel)[0].realize()
+    self.assertEqual(out.tolist(), [1.0, 2.0, 3.0, 4.0])
+
+  def test_lower_shape_dim_range_2d(self):
+    def copy_kernel(out, inp):
+      ir = Kernel(
+        "test_shape_dim_range_2d",
+        (Arg("out"), Arg("inp")),
+        (
+          Range("i", "inp.shape.0", (
+            Range("j", "inp.shape.1", (
+              Store("out", Index2D("i", "j", 3), Load("inp", Index2D("i", "j", 3))),
+            )),
+          )),
+        ),
+      )
+      return lower_kernel(ir, out, inp)
+    inp = Tensor([1.0, 2.0, 3.0, 4.0, 5.0, 6.0]).reshape(2, 3).realize()
+    out = Tensor.empty(6)
+    out = out.custom_kernel(inp, fxn=copy_kernel)[0].realize()
+    self.assertEqual(out.tolist(), [1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
   
   def test_ir_shared_copy_kernel(self):
     def shared_copy_kernel(out, inp):

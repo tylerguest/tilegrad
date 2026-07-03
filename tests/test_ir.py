@@ -1,5 +1,6 @@
 import unittest
 from tilegrad.ir import Add, Alloc, And, Arg, Barrier, Const, FloorDiv, FragmentAlloc, FragmentClear, FragmentGemm, FragmentStore, Kernel, Load, LoadIf, Lt, Mod, Mul, Range, Store, BinaryExpr, Expr, KernelOp, Stmt, Set, SetIf, Sub, Index2D, Var, and_, lt
+from tilegrad.utils import ceildiv_expr
 
 class TestIR(unittest.TestCase):
   def test_arg(self):
@@ -177,6 +178,16 @@ class TestIR(unittest.TestCase):
     self.assertEqual(stmt.dst_stride, 3)
     self.assertEqual(stmt.guard, guard)
     self.assertIsInstance(stmt, Stmt)
+
+  def test_ceildiv_expr_var_by_int(self):
+    self.assertEqual(ceildiv_expr(Var("M"), 8), FloorDiv(Add(Var("M"), 7), 8))
+
+  def test_ceildiv_expr_shape_string_by_int(self):
+    self.assertEqual(ceildiv_expr("inp.shape.0", 8), FloorDiv(Add("inp.shape.0", 7), 8))
+
+  def test_ceildiv_expr_requires_int_divisor(self):
+    with self.assertRaisesRegex(TypeError, "ceildiv_expr divisor must be an int"):
+      ceildiv_expr(Var("M"), Var("B"))
 
 if __name__ == "__main__":
   unittest.main()

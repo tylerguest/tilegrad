@@ -11,6 +11,11 @@ def validate_shape(shape, buffers):
       name = shape[:-6]
       if name not in buffers: raise ValueError(f"unknown buffer: {name}")
       return 
+    if ".shape." in shape:
+      name, dim = shape.rsplit(".shape.", 1)
+      if name not in buffers: raise ValueError(f"unknown buffer: {name}")
+      if not dim.isdigit(): raise ValueError(f"invalid shape dimension: {shape}")
+      return
     raise ValueError(f"unknown shape expression: {shape}")
   raise TypeError(f"unsupported shape type: {type(shape).__name__}")
 

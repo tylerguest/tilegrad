@@ -8,31 +8,30 @@
 
 `tilegrad` is a small TileLang-inspired kernel frontend that lowers to tinygrad UOps.
 
-The goal is to make tiled GPU kernels easier to write than raw tinygrad custom UOps while keeping the compiler path tiny, inspectable, and hackable.
+The goal is to make custom tiled GPU kernels easier to write than raw tinygrad custom UOps while keeping the compiler path small, inspectable, and hackable.
 
 ```text
 KernelBuilder -> tilegrad IR -> tinygrad UOps -> tinygrad runtime/codegen
 ```
 
-`tilegrad` is early. It currently focuses on proving a small set of tiled-kernel semantics:
+`tilegrad` is early and experimental. Current priorities are correctness, readability, and learning the right programming model before optimizing.
 
-- explicit IR and validation
-- GPU grid and local thread axes
-- shared memory allocations
-- register accumulators
-- unrolled/vectorized loops
-- tiled copies
-- barriers
-- reduce loops
-- small GEMM kernels
+## Features
 
-## Why
-
-`tilegrad` is trying to be to tinygrad what TileLang is to TVM.
-
-TileLang gives TVM users a productive way to write tiled GPU kernels without manually working at the lowest compiler-IR level. `tilegrad` aims to do the same for tinygrad: provide a small tiled-kernel frontend while still lowering into tinygrad's UOps, runtime, codegen, and debugging tools.
-
-The goal is not to replace tinygrad. The goal is to make custom tiled kernels easier to author while preserving tinygrad's inspectable compiler path.
+- Explicit kernel builder API
+- Validation over a small TileGrad IR
+- GPU grid axes with `grid(...)` / `blocks(...)`
+- GPU local thread axes with `threads(...)`
+- `parallel(...)` as a compatibility alias for `threads(...)`
+- Serial, reduce, and unroll ranges
+- Shared memory allocations
+- Register accumulators
+- Barriers
+- Guarded loads and stores
+- Tiled `copy(...)`
+- Fragment GEMM scalar expansion
+- Canonical grid/thread tiled GEMM
+- Simple benchmark harness
 
 ## Setup
 
@@ -58,46 +57,28 @@ python3 -m pytest tests/
 
 ## Quick Examples
 
-Run a simple IR copy:
+Run a simple copy:
 
 ```bash
-python3 examples/ir_copy.py
+python3 examples/builder_copy.py
 ```
 
-Run a shared-memory copy:
+Run a shape-derived copy:
 
 ```bash
-python3 examples/ir_shared_copy.py
+python3 examples/builder_shape_dims_copy.py
 ```
 
-Run a builder-authored tiled GEMM:
-
-```bash
-python3 examples/builder_tiled_gemm.py
-```
-
-Expected output:
-
-```text
-[413.0, 434.0, 1061.0, 1118.0]
-```
-
-Run a grid/thread copy that lowers to GPU launch dimensions:
+Run a grid/thread copy:
 
 ```bash
 python3 examples/builder_grid_threads_copy.py
 ```
 
-Run an unrolled grid/thread copy that lowers to vectorized memory ops:
+Run the canonical tiled GEMM:
 
 ```bash
-python3 examples/builder_grid_threads_unroll_fill.py
-```
-
-Run the current edge-tiled GEMM boundary example where each local lane computes one output element:
-
-```bash
-python3 examples/builder_grid_threads_output_lanes_gemm_edge.py
+python3 examples/builder_canonical_tiled_gemm.py
 ```
 
 Expected output:
@@ -106,9 +87,27 @@ Expected output:
 [360.0, 375.0, 390.0, 910.0, 950.0, 990.0, 1460.0, 1525.0, 1590.0]
 ```
 
+Run fragment GEMM under grid/thread axes:
+
+```bash
+python3 examples/builder_grid_thread_fragment_gemm.py
+```
+
+Run syntax-only pipelined copy:
+
+```bash
+python3 examples/builder_pipelined_copy.py
+```
+
+Run GEMM benchmarks:
+
+```bash
+python3 benchmarks/bench_gemm.py
+```
+
 ## Execution Axes
 
-TileGrad ranges map directly to tinygrad `AxisType` values:
+TileGrad ranges map directly to tinygrad axis types.
 
 | TileGrad API | IR axis | tinygrad axis | Purpose |
 | --- | --- | --- | --- |
@@ -119,9 +118,13 @@ TileGrad ranges map directly to tinygrad `AxisType` values:
 | `k.parallel(...)` | `"local"` | `AxisType.LOCAL` | alias for `k.threads(...)` |
 | `k.range(..., axis="unroll")` | `"unroll"` | `AxisType.UNROLL` | unrolled/vectorized loop |
 
-For example:
+Prefer `threads(...)` in new code. `parallel(...)` is kept as an alias, but it means local GPU thread axes, not generic parallel iteration.
+
+Example:
 
 ```python
+from tilegrad import KernelBuilder
+
 k = KernelBuilder("grid_threads_copy", ("out", "inp"))
 out = k.buffer("out")
 inp = k.buffer("inp")
@@ -132,60 +135,151 @@ with k.grid(2) as block:
     out[i] = inp[i]
 ```
 
-With tinygrad debugging enabled, this lowers through `AxisType.GLOBAL` and `AxisType.LOCAL` to GPU block and thread indices such as `%ctaid.x` and `%tid.x` on CUDA.
+With tinygrad debugging enabled, this lowers to GPU block and thread indices such as `%ctaid.x` and `%tid.x` on CUDA.
 
-## Example Kernel
+## Copy
 
-A small tiled GEMM in tilegrad uses shared tiles, a register accumulator, tiled copies, a barrier, and a reduce loop:
-
-```python
-k = KernelBuilder("builder_tiled_gemm", ("out", "a", "b"))
-k.alloc("as", 3, "float32")
-k.alloc("bs", 3, "float32")
-k.alloc("acc", 1, "float32", "register")
-
-with k.range("i", 2):
-  with k.range("j", 2):
-    k.set("acc", 0, 0)
-    with k.range("ko", 2):
-      k.copy("a", "as", shape=(1, 3), stride=6, src_row_off="i", src_col_off=Mul("ko", 3))
-      k.copy("b", "bs", shape=(3,), stride=2, src_row_off=Mul("ko", 3), src_col_off="j")
-      k.barrier()
-      with k.range("kk", 3, axis="reduce"):
-        k.set("acc", 0, Add(k.load("acc", 0), Mul(k.load("as", "kk"), k.load("bs", "kk"))))
-    k.set("out", Index2D("i", "j", 2), k.load("acc", 0))
-```
-
-See `examples/builder_tiled_gemm.py` for the runnable version.
-
-A more GPU-shaped edge-tiled GEMM uses `grid` for output tiles and `threads` for local output lanes:
+`copy(...)` is a synchronous helper that expands into normal TileGrad loops.
 
 ```python
-with k.grid(2, 2) as (bi, bj):
-  with k.threads(BM, BN) as (ti, tj):
-    gi = bi * BM + ti
-    gj = bj * BN + tj
-    acc[0] = 0
-    with k.range("ko", KTILES) as ko:
-      # cooperative shared-memory tile fill
-      k.barrier()
-      with k.range("kk", BK, axis="reduce") as kk:
-        acc[0] = acc[0] + as_tile[ti, kk] * bs_tile[kk, tj]
-    k.store_if((gi < M) & (gj < N), out, (gi, gj), acc[0])
+k.copy(
+  src,
+  dst,
+  shape=(BM, BK),
+  src_origin=(row, col),
+  dst_origin=(0, 0),
+  src_stride=K,
+  dst_stride=BK,
+  guard=(row < M) & (col < K),
+  fill=0,
+)
 ```
 
-See `examples/builder_grid_threads_output_lanes_gemm_edge.py` for the runnable version.
+Current support:
+
+- 1D, 2D, and compact 3D copies
+- source and destination offsets
+- source and destination strides
+- shape inference from shaped `BufferRef`s
+- guarded edge loads
+- zero-fill with `fill=0`
+
+Not supported yet:
+
+- async copy
+- wait groups
+- software pipelines
+- copy coalescing policies
+- non-zero fill values
+
+## Canonical GEMM
+
+The main GEMM path is `tiled_gemm(...)`:
+
+```python
+from tilegrad import run
+from tilegrad.kernels import tiled_gemm
+
+M = 3
+N = 3
+K = 5
+BM = 2
+BN = 2
+BK = 3
+
+k = tiled_gemm(M, N, K, BM, BN, BK)
+```
+
+It uses:
+
+- `grid(ceildiv(M, BM), ceildiv(N, BN))`
+- `threads(BM, BN)`
+- one output element per local lane
+- shared A/B tiles
+- K-tail guards
+- M/N edge guards
+- guarded output stores
+
+See:
+
+```bash
+python3 examples/builder_canonical_tiled_gemm.py
+```
+
+## Fragments
+
+TileGrad has a `FragmentGemm` path, but it currently expands to scalar register operations. It is useful for correctness and inspectability, not performance.
+
+See:
+
+```bash
+python3 examples/builder_grid_thread_fragment_gemm.py
+```
+
+The benchmark currently shows fragment GEMM is much slower than the canonical grid/thread GEMM. This is expected until a real intrinsic path, such as a single supported `Ops.WMMA` lowering, is prototyped.
+
+## Shape Helpers
+
+TileGrad supports simple shape-derived dimensions:
+
+```python
+with k.range("i", "inp.shape.0") as i:
+  out[i] = inp[i]
+```
+
+It also has a small integer helper:
+
+```python
+from tilegrad import ceildiv, ceildiv_expr
+```
+
+`ceildiv(...)` is for Python integers. `ceildiv_expr(...)` builds a TileGrad expression for static integer divisors.
+
+## Pipelined Syntax
+
+`pipelined(...)` exists as syntax only:
+
+```python
+with k.pipelined("ko", KTILES, stages=2) as ko:
+  ...
+```
+
+Today it behaves exactly like:
+
+```python
+with k.range("ko", KTILES) as ko:
+  ...
+```
+
+It validates `stages`, but does not implement async copy, wait groups, double buffering, or real software pipeline scheduling yet.
+
+## Benchmarks
+
+Run:
+
+```bash
+python3 benchmarks/bench_gemm.py
+```
+
+The benchmark compares:
+
+- tinygrad `Tensor.matmul`
+- TileGrad canonical tiled GEMM
+- scalar fragment GEMM baseline
+- grid/thread fragment GEMM baseline
+
+The fragment baselines are intentionally limited to small sizes because fragment GEMM currently expands to scalar operations.
 
 ## Debugging
 
-Because tilegrad lowers to tinygrad UOps, tinygrad debugging tools work normally:
+Because TileGrad lowers to tinygrad UOps, tinygrad debugging tools work normally:
 
 ```bash
-DEBUG=6 python3 examples/builder_tiled_gemm.py
-DEBUG=6 python3 examples/builder_grid_threads_output_lanes_gemm_edge.py
+DEBUG=6 python3 examples/builder_canonical_tiled_gemm.py
+DEBUG=6 python3 examples/builder_grid_threads_copy.py
 VIZ=1 python3 examples/ir_shared_copy.py
 ```
 
 ## Status
 
-This is experimental. The current priority is correctness and inspectability over performance.
+This project is experimental.
