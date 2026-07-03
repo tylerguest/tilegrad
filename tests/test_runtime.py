@@ -2,6 +2,30 @@ import unittest
 from tinygrad import Tensor
 from tilegrad import KernelBuilder, run
 from tilegrad.ir import Add, Index2D, Kernel, Mul, Var
+from tilegrad.kernels import grid_thread_fragment_gemm, tiled_gemm
+
+def seq(n): return [float(i + 1) for i in range(n)]
+
+def ref_matmul(a, b, M, N, K):
+  return [
+    sum(a[i * K + kk] * b[kk * N + j] for kk in range(K))
+    for i in range(M)
+    for j in range(N)
+  ]
+
+def run_tiled_gemm_case(M, N, K, BM=2, BN=2, BK=3):
+  k = tiled_gemm(M, N, K, BM=BM, BN=BN, BK=BK)
+  a_vals = seq(M * K)
+  b_vals = seq(K * N)
+  out = run(k, Tensor.empty(M * N), Tensor(a_vals), Tensor(b_vals)).tolist()
+  return out, ref_matmul(a_vals, b_vals, M, N, K)
+
+def run_grid_thread_fragment_gemm_case(M, N, K, BM=2, BN=2, BK=3):
+  k = grid_thread_fragment_gemm(M, N, K, BM=BM, BN=BN, BK=BK)
+  a_vals = seq(M * K)
+  b_vals = seq(K * N)
+  out = run(k, Tensor.empty(M * N), Tensor(a_vals), Tensor(b_vals)).tolist()
+  return out, ref_matmul(a_vals, b_vals, M, N, K)
 
 class TestRuntime(unittest.TestCase):
   def test_run_copy(self):
@@ -511,6 +535,62 @@ class TestRuntime(unittest.TestCase):
     ])
     out_t = Tensor.empty(12)
     self.assertEqual(run(k, out_t, inp_t).tolist(), inp_t.tolist())
+
+  def test_run_canonical_tiled_gemm_exact_tile(self):
+    out, expected = run_tiled_gemm_case(2, 2, 3, BM=2, BN=2, BK=3)
+    self.assertEqual(out, expected)
+
+  def test_run_canonical_tiled_gemm_mn_edge(self):
+    out, expected = run_tiled_gemm_case(3, 3, 3, BM=2, BN=2, BK=3)
+    self.assertEqual(out, expected)
+  
+  def test_run_canonical_tiled_gemm_k_tail(self):
+    out, expected = run_tiled_gemm_case(2, 2, 5, BM=2, BN=2, BK=3)
+    self.assertEqual(out, expected)
+  
+  def test_run_canonical_tiled_gemm_non_square(self):
+    out, expected = run_tiled_gemm_case(3, 4, 5, BM=2, BN=2, BK=3)
+    self.assertEqual(out, expected)
+  
+  def test_run_canonical_tiled_gemm_flagship(self):
+    M, N, K = 3, 3, 5
+    k = tiled_gemm(M, N, K, BM=2, BN=2, BK=3)
+    a_vals = seq(M * K)
+    b_vals = [float(i + 16) for i in range(K * N)]
+    out = run(k, Tensor.empty(M * N), Tensor(a_vals), Tensor(b_vals)).tolist()
+    self.assertEqual(out, [
+      360.0, 375.0, 390.0,
+      910.0, 950.0, 990.0,
+      1460.0, 1525.0, 1590.0,
+    ])
+
+  def test_run_grid_thread_fragment_gemm_exact_tile(self):
+    out, expected = run_grid_thread_fragment_gemm_case(2, 2, 3, BM=2, BN=2, BK=3)
+    self.assertEqual(out, expected)
+
+  def test_run_grid_thread_fragment_gemm_mn_edge(self):
+    out, expected = run_grid_thread_fragment_gemm_case(3, 3, 3, BM=2, BN=2, BK=3)
+    self.assertEqual(out, expected)
+
+  def test_run_grid_thread_fragment_gemm_k_tail(self):
+    out, expected = run_grid_thread_fragment_gemm_case(2, 2, 5, BM=2, BN=2, BK=3)
+    self.assertEqual(out, expected)
+
+  def test_run_grid_thread_fragment_gemm_non_square(self):
+    out, expected = run_grid_thread_fragment_gemm_case(3, 4, 5, BM=2, BN=2, BK=3)
+    self.assertEqual(out, expected)
+
+  def test_run_grid_thread_fragment_gemm_flagship(self):
+    M, N, K = 3, 3, 5
+    k = grid_thread_fragment_gemm(M, N, K, BM=2, BN=2, BK=3)
+    a_vals = seq(M * K)
+    b_vals = [float(i + 16) for i in range(K * N)]
+    out = run(k, Tensor.empty(M * N), Tensor(a_vals), Tensor(b_vals)).tolist()
+    self.assertEqual(out, [
+      360.0, 375.0, 390.0,
+      910.0, 950.0, 990.0,
+      1460.0, 1525.0, 1590.0,
+    ])
 
 if __name__ == "__main__":
   unittest.main()

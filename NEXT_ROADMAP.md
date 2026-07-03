@@ -216,6 +216,36 @@ Recommended path:
 
 Do not start with a general WMMA implementation. Start with one backend-supported case.
 
+Execution plan:
+
+1. Treat scalar fragment expansion as the default path.
+   The Phase 4 benchmark shows that `FragmentGemm` is correctness-oriented and inspectable, not performance-oriented. Keep this behavior as the fallback for every unsupported shape, dtype, or backend.
+
+2. Keep the grid/thread fragment coverage.
+   Maintain tests and examples that run fragment GEMM under `grid(...)` and `threads(...)`, even if the local thread axis is minimal. This protects launch-axis compatibility before intrinsic lowering exists.
+
+3. Replace the placeholder intrinsic gate with a real policy function.
+   Evolve `can_lower_fragment_gemm_intrinsic(...)` from a hardcoded `False` into an explicit shape/dtype/backend gate. The function should be small, easy to audit, and conservative.
+
+4. Choose exactly one prototype target.
+   Prefer one CUDA-supported shape and dtype combination, such as a single `16x16x16` style WMMA case with `float16` inputs and `float32` accumulation, if that matches tinygrad's current `Ops.WMMA` support. If tinygrad supports a different canonical shape, match tinygrad rather than inventing a TileGrad-specific one.
+
+5. Inspect tinygrad's WMMA support before lowering anything.
+   Answer these questions in code comments or tests before implementing lowering:
+   - What UOp signature does `Ops.WMMA` expect?
+   - What shapes and dtypes are supported?
+   - Which renderers implement it?
+   - Is CUDA supported in the local tinygrad checkout?
+
+6. Add gate-only tests first.
+   Test that unsupported dtypes return `False`, unsupported shapes return `False`, the chosen supported shape returns `True`, and ordinary fragment GEMM still expands through the scalar fallback.
+
+7. Prototype one intrinsic lowering path only after the gate is tested.
+   Keep the prototype behind the gate. If the gate rejects the case, fragment GEMM must continue using scalar expansion.
+
+8. Do not implement a general WMMA system yet.
+   Avoid broad layout handling, transpose support, backend abstraction, mixed architecture policies, or auto-selection until one backend-supported case works and is tested.
+
 ## Phase 6: Shape And Symbolic Dimensions
 
 Goal: avoid hardcoding every kernel shape.

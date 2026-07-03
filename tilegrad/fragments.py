@@ -73,3 +73,6 @@ class _FragmentExpander:
 
 def expand_fragments(kernel):
   return _FragmentExpander().expand_kernel(kernel)
+
+def can_lower_fragment_gemm_intrinsic(dtype, a_shape, b_shape, c_shape):
+  return False
