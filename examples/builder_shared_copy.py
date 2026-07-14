@@ -2,13 +2,17 @@ from tinygrad import Tensor
 from tilegrad.builder import KernelBuilder
 from tilegrad.lowerer import lower_kernel
 
-def builder_shared_copy_kernel(out, inp):
-  k = KernelBuilder("tilegrad_builder_shared_copy", ("out", "inp"))
-  k.alloc("smem", "out.numel", "float32")
-  with k.range("i", "out.numel"): k.store("smem", "i", k.load("inp", "i"))
+def builder_shared_copy_kernel(out_uop, inp_uop):
+  k = KernelBuilder("shared_copy", ("out", "inp"))
+  out = k.buffer("out", shape=(4,), dtype="float32")
+  inp = k.buffer("inp", shape=(4,), dtype="float32")
+  smem = k.shared("smem", shape=(4,), dtype="float32")
+
+  k.copy(inp.tile(), smem.tile())
   k.barrier()
-  with k.range("j", "out.numel"): k.store("out", "j", k.load("smem", "j"))
-  return lower_kernel(k.build(), out, inp)
+  k.copy(smem.tile(), out.tile())
+
+  return lower_kernel(k.build(), out_uop, inp_uop)
 
 if __name__ == "__main__":
   inp = Tensor([1.0, 2.0, 3.0, 4.0])

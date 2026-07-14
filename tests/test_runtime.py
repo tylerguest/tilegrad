@@ -602,5 +602,18 @@ class TestRuntime(unittest.TestCase):
     out_t = Tensor.empty(4)
     self.assertEqual(run(k, out_t, inp_t).tolist(), [1.0, 2.0, 3.0, 4.0])
 
+  def test_run_tile_view_copy_2d_src_origin(self):
+    k = KernelBuilder("tile_view_copy_2d_src_origin", ("out", "inp"))
+    out = k.buffer("out", shape=(2,2), dtype="float32")
+    inp = k.buffer("inp", shape=(3,4), dtype="float32")
+    k.copy(inp.tile(origin=(1,1), shape=(2,2), bounds=(3,4)), out.tile())
+    inp_t = Tensor([
+      1.0, 2.0, 3.0, 4.0,
+      5.0, 6.0, 7.0, 8.0,
+      9.0, 10.0, 11.0, 12.0,
+    ])
+    out_t = Tensor.empty(4)
+    self.assertEqual(run(k, out_t, inp_t).tolist(), [6.0, 7.0, 10.0, 11.0])
+
 if __name__ == "__main__":
   unittest.main()

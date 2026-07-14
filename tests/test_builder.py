@@ -1056,6 +1056,42 @@ class TestBuilder(unittest.TestCase):
     k = KernelBuilder("bad_pipelined", ("out",))
     with self.assertRaisesRegex(ValueError, "pipelined stages must be a positive integer"):
       k.pipelined("ko", 2, stages="2")
+  
+  def test_tile_view_constructs_metadata(self):
+    k = KernelBuilder("tile_view", ("out", "inp"))
+    inp = k.buffer("inp", shape=(4, 5), dtype="float32")
+    tile = inp.tile(origin=(1,2), shape=(2,3), bounds=(4,5))
+    self.assertEqual(tile.buffer, inp)
+    self.assertEqual(tile.origin, (1,2))
+    self.assertEqual(tile.shape, (2,3))
+    self.assertEqual(tile.bounds, (4,5))
+  
+  def test_copy_accepts_tile_views_ir(self):
+    k = KernelBuilder("tile_copy", ("out", "inp"))
+    out = k.buffer("out", shape=(2, 3), dtype="float32")
+    inp = k.buffer("inp", shape=(4, 5), dtype="float32")
+    k.copy(inp.tile(origin=(1, 2), shape=(2, 3), bounds=(4, 5)), out.tile())
+    expected = Kernel(
+      "tile_copy",
+      (Arg("out"), Arg("inp")),
+      (
+        Range("_c0_i0", 2, (
+          Range("_c0_i1", 3, (
+            Store(
+              "out",
+              Index2D("_c0_i0", "_c0_i1", 3),
+              LoadIf(
+                And(Lt(Add(1, Var("_c0_i0")), 4), Lt(Add(2, Var("_c0_i1")), 5)),
+                "inp",
+                Index2D(Add(1, "_c0_i0"), Add(2, "_c0_i1"), 5),
+              ),
+            ),
+          )),
+        )),
+      ),
+    )
+    self.assertEqual(k.build(), expected)
+
       
 if __name__ == "__main__":
   unittest.main()

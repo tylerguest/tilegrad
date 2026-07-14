@@ -1,16 +1,41 @@
+from dataclasses import dataclass
 from tilegrad.ir import Add, Alloc, Arg, Barrier, FragmentAlloc, FragmentClear, FragmentGemm, FragmentStore, Index2D, Kernel, Load, LoadIf, Mul, Not, Range, Set, SetIf, Store, StoreIf, Var
 
+@dataclass(frozen=True)
+class TileView:
+  buffer: object
+  origin: tuple
+  shape: tuple
+  stride: object = None
+  bounds: tuple | None = None
+  mask: object | None = None
+  layout: object | None = None
+
 class BufferRef:
-  def __init__(self, builder, name, shape=None):
+  def __init__(self, builder, name, shape=None, dtype=None, stride=None, scope="global"):
     self.builder = builder
     self.name = name
     self.shape = shape
+    self.dtype = dtype
+    self.stride = stride
+    self.scope = scope
   
   def _index(self, index):
     if not isinstance(index, tuple): return index
     if self.shape is None: raise ValueError("tuple indexing requires shape")
     return _flatten_nd_index(index, self.shape)
   
+  def tile(self, origin=None, shape=None, stride=None, bounds=None, mask=None, layout=None):
+    shape = self.shape if shape is None else shape
+    if shape is None: raise ValueError("tile shape is required unless buffer shape is set")
+    if not isinstance(shape, tuple): raise TypeError("tile shape must be a tuple")
+    origin = tuple(0 for _ in shape) if origin is None else origin
+    if not isinstance(origin, tuple): origin = (origin,)
+    if len(origin) != len(shape): raise ValueError(f"{len(origin)}D tile origin does not match {len(shape)}D tile shape")
+    if bounds is not None and (not isinstance(bounds, tuple) or len(bounds) != len(shape)):
+      raise ValueError(f"tile bounds must be a {len(shape)}D tuple")
+    return TileView(self, origin, shape, self.stride if stride is None else stride, bounds, mask, layout)
+
   def __getitem__(self, index): return Load(self.name, self._index(index))
   def __setitem__(self, index, value): self.builder.set(self.name, self._index(index), value)
 
@@ -21,10 +46,33 @@ class FragmentRef:
     self.shape = shape
     self.dtype = dtype
 
-def _buffer_name(x): return x.name if isinstance(x, BufferRef) else x
-def _fragment_name(x): return x.name if isinstance(x, FragmentRef) else x
+def _numel(shape):
+  if isinstance(shape, int): return shape
+  if not isinstance(shape, tuple): raise TypeError("shape must be an int or tuple")
+  out = 1
+  for dim in shape:
+    if not isinstance(dim, int): raise TypeError("tuple allocation shapes must contain integers")
+    out *= dim
+  return out
+def _default_stride(shape): return shape[1] if isinstance(shape, tuple) and len(shape) == 2 else None
+def _buffer_name(x): 
+  if isinstance(x, TileView): return x.buffer.name
+  return x.name if isinstance(x, BufferRef) else x
+def _buffer_ref(x): return x.buffer if isinstance(x, TileView) else x
 def _buffer_index(buffer, index): return buffer._index(index) if isinstance(buffer, BufferRef) else index
-
+def _fragment_name(x): return x.name if isinstance(x, FragmentRef) else x
+def _and(lhs, rhs):
+  if lhs is None: return rhs
+  if rhs is None: return lhs
+  return lhs & rhs 
+def _tile_guard(tile, names, origin):
+  if tile is None: return None
+  guard = tile.mask
+  if tile.bounds is not None:
+    for i, bound in enumerate(tile.bounds):
+      coord = _add_if_nonzero(_origin_at(origin, i), Var(names[i]))
+      guard = _and(guard, coord < bound)
+  return guard
 def _flatten_nd_index(indices, shape):
   if len(indices) != len(shape): raise ValueError(f"{len(indices)}D index does not match {len(shape)}D shape")
   if len(indices) == 1: return indices[0]
@@ -90,7 +138,16 @@ class KernelBuilder:
 
   def parallel(self, *extents): return self.threads(*extents)
 
-  def buffer(self, name, shape=None): return BufferRef(self, name, shape)
+  def buffer(self, name, shape=None, dtype=None, stride=None, scope="global"):
+    return BufferRef(self, name, shape, dtype, _default_stride(shape) if stride is None else stride, scope)
+  
+  def shared(self, name, shape, dtype):
+    self.alloc(name, _numel(shape), dtype, "shared")
+    return self.buffer(name, shape=shape, dtype=dtype, scope="shared")
+  
+  def register(self, name, shape, dtype):
+    self.alloc(name, _numel(shape), dtype, "register")
+    return self.buffer(name, shape=shape, dtype=dtype, scope="register")
 
   def buffers(self, *names): return tuple(self.buffer(name) for name in names)
 
@@ -154,20 +211,28 @@ class KernelBuilder:
       raise ValueError("pipelined stages must be a positive integer")
     return _RangeContext(self, name, extent, "loop")
 
-  def copy(self, src, dst, shape=None, stride=None, src_row_off=0, src_col_off=0, src_origin=None, 
-           dst_origin=None, src_stride=None, dst_stride=None, guard=None, fill=None,):
-    src_ref = src
-    dst_ref = dst
+  def copy(self, src, dst, shape=None, stride=None, src_row_off=0, src_col_off=0, src_origin=None, dst_origin=None, src_stride=None, dst_stride=None, guard=None, fill=None,):
+    src_tile = src if isinstance(src, TileView) else None
+    dst_tile = dst if isinstance(dst, TileView) else None
+    src_ref = _buffer_ref(src)
+    dst_ref = _buffer_ref(dst)
+    shape = shape or (dst_tile.shape if dst_tile is not None else src_tile.shape if src_tile is not None else None)
     shape = _copy_shape(src_ref, dst_ref, shape)
     if not isinstance(shape, tuple): raise TypeError("copy shape must be a tuple")
     if len(shape) == 0: raise ValueError("copy shape must not be empty")
     if len(shape) > 3: raise NotImplementedError(f"copy does not support {len(shape)}D")
     if fill not in (None, 0): raise NotImplementedError("copy only supports fill=0")
 
-    if src_origin is None: src_origin = (src_row_off, src_col_off) if len(shape) >= 2 or stride is not None else (src_col_off,)
-    if dst_origin is None: dst_origin = tuple(0 for _ in shape)
+    if src_origin is None:
+      src_origin = src_tile.origin if src_tile is not None else (src_row_off, src_col_off) if len(shape) >= 2 or stride is not None else (src_col_off,) 
+    if dst_origin is None:
+      dst_origin = dst_tile.origin if dst_tile is not None else tuple(0 for _ in shape)
 
-    if src_stride is None: src_stride = stride
+    if src_stride is None:
+      src_stride = src_tile.stride if src_tile is not None and src_tile.stride is not None else stride
+    if dst_stride is None:
+      dst_stride = dst_tile.stride if dst_tile is not None and dst_tile.stride is not None else None
+    
     src_stride = _copy_stride(src_ref, src_stride, shape, "src")
     dst_stride = _copy_stride(dst_ref, dst_stride, shape, "dst")
 
@@ -180,16 +245,26 @@ class KernelBuilder:
     src_idx = _copy_src_index(names, shape, src_origin, src_stride)
     dst_idx = _copy_dst_index(names, shape, dst_origin, dst_stride)
 
-    if guard is None: stmt = Store(dst, dst_idx, Load(src, src_idx))
-    elif fill == 0: stmt = Store(dst, dst_idx, LoadIf(guard, src, src_idx))
-    else: stmt = StoreIf(guard, dst, dst_idx, Load(src, src_idx))
+    load_guard = _tile_guard(src_tile, names, src_origin)
+    store_guard = _tile_guard(dst_tile, names, dst_origin)
 
+    if guard is not None and fill == 0:
+      load_guard = _and(load_guard, guard)
+    elif guard is not None:
+      store_guard = _and(store_guard, guard) 
+    
+    value = Load(src, src_idx)
+    if load_guard is not None: value = LoadIf(load_guard, src, src_idx)
+
+    stmt = StoreIf(store_guard, dst, dst_idx, value) if store_guard is not None else Store(dst, dst_idx, value)
+    
     body = (stmt,)
     for name, extent in reversed(tuple(zip(names, shape))):
       body = (Range(name, extent, body),)
     self._current_body().extend(body)
-
+  
   def build(self): return Kernel(self.name, self.args, tuple(self._body))
+
 
 class _RangeContext:
   def __init__(self, builder, name, extent, axis):

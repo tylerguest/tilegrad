@@ -1,14 +1,14 @@
 # TileGrad Roadmap
 
-TileGrad should become a TileLang-like explicit tile DSL for tinygrad UOps.
+TileGrad should be a thin, inspectable tile programming layer over tinygrad UOps.
 
-The core direction is:
+The long-term direction is:
 
 ```text
 global tile -> shared tile -> register fragment -> mma -> global tile store
 ```
 
-TileGrad should own the high-level schedule. tinygrad should provide UOp lowering, backend codegen, and runtime integration.
+TileGrad should own the explicit schedule. tinygrad should provide UOp lowering, backend codegen, and runtime integration.
 
 ## Current Position
 
@@ -16,50 +16,88 @@ TileGrad is already a useful proof-of-concept:
 
 - It has a small IR and validator.
 - It lowers explicit `grid`, `threads`, `range`, `reduce`, `unroll`, `shared`, `register`, and `barrier` to tinygrad UOps.
-- It has broad correctness coverage for copy, shared memory, guarded loads/stores, reductions, fragments, edge GEMM, and grid/thread GEMM.
+- It has correctness coverage for copy, shared memory, guarded loads/stores, reductions, fragments, edge GEMM, and grid/thread GEMM.
 - It defaults to `KernelInfo(opts_to_apply=())`, which is the right default for an explicit scheduling DSL.
 
-The main gap is that TileGrad is still mostly a scalar kernel builder, not yet a first-class tile programming layer.
-
-## Key Findings
-
-- `KernelBuilder` is solid but low-level. `BufferRef` currently tracks only `name` and `shape`, so TileGrad lacks first-class tile/layout/stride/dtype/scope objects.
-- `copy(...)` is useful but scalar-expands loops. It is not yet a tile movement primitive with coalescing, vectorization, async, or pipeline semantics.
-- `pipelined(...)` currently validates syntax only and behaves like a normal range.
-- `FragmentGemm` currently scalar-expands, and intrinsic fragment lowering is not implemented yet.
-- tinygrad already has the backend pieces needed: explicit custom kernels, `KernelInfo(opts_to_apply)`, GPU dimension lowering, local/register address spaces, and `Ops.WMMA` support.
-- tinygrad's tensor-core path is mostly optimizer-oriented today. TileGrad should eventually build explicit `Ops.WMMA` for scheduled fragments instead of relying on heuristic tensor-core discovery.
+The main gap is that TileGrad is still mostly a scalar kernel builder. The next step is not a big compiler stack; it is a small tile layer on top of the existing scalar IR.
 
 ## Design Principles
 
-- TileGrad owns explicit scheduling.
-- tinygrad is the backend/codegen/runtime layer.
-- The default mode should preserve the schedule the user wrote.
-- tinygrad heuristic scheduling should be opt-in, not the default for explicitly scheduled TileGrad kernels.
-- TileGrad should expose tile-level concepts rather than forcing users to manually write scalar load/store loops.
-- Correct scalar fallback should exist before optimized lowering.
-- Debuggability should be a core feature.
+- Keep TileGrad thin: `KernelBuilder / TileView -> TileGrad IR -> tinygrad UOps`.
+- Preserve the schedule the user wrote.
+- Use tinygrad as backend/codegen/runtime, not as the high-level scheduler for explicitly scheduled kernels.
+- Prefer one good abstraction over many speculative abstractions.
+- Keep scalar fallback paths before optimized lowering.
+- Make every layer inspectable.
+- Let users escape to lower-level IR/UOps when needed.
 
-## Phase 1: Stabilize The Core
+## Non-Goals For Now
 
-Goals:
+- Do not replace tinygrad backend codegen.
+- Do not infer tiled schedules from ordinary tinygrad Tensor programs.
+- Do not build a decorator or Python AST frontend before the tile IR is stable.
+- Do not build a custom optimizer before there is one fast kernel to optimize.
+- Do not add many tile subclasses until one `TileView` abstraction proves insufficient.
+- Do not rely on tinygrad heuristic scheduling for explicitly scheduled TileGrad kernels.
+
+## Architecture Boundary
+
+The key boundary should remain:
+
+```text
+TileGrad user API -> TileGrad IR -> tinygrad UOps -> tinygrad codegen/runtime
+```
+
+TileGrad should own:
+
+- `grid` and `threads` structure
+- shared/register/global memory intent
+- barriers and ordering
+- tile shapes and masks
+- fragment/MMA intent
+- pipeline structure once implemented
+
+tinygrad should own:
+
+- UOp simplification and validation
+- GPU dimension lowering
+- renderer/backend lowering
+- compilation and execution
+- low-level backend details
+
+## Phase 1: Core Stability
+
+Goal: make the existing scalar builder and lowerer easier to evolve without adding a large abstraction layer.
+
+Work:
 
 - Keep `KernelBuilder` as the core frontend.
 - Keep `opts_to_apply=()` as the default for TileGrad-lowered kernels.
 - Add explicit `dtype`, `scope`, `shape`, and `stride` metadata to `BufferRef`.
-- Add a public debug API to print TileGrad IR, expanded IR, lowered UOps, and generated source.
-- Add compatibility wrappers around tinygrad UOp API calls so tinygrad churn is isolated in one file.
+- Add public debug helpers for TileGrad IR, expanded IR, lowered UOps, and generated source.
+- Add a small tinygrad UOp adapter only for APIs that have already shown churn: scalar dtype, index/load/store, placeholders, ranges, and `KernelInfo`.
 
-Deliverables:
+Success criteria:
 
-- `BufferRef` metadata cleanup.
-- `tilegrad.debug` helpers.
-- One compatibility module for tinygrad API boundaries.
-- Tests for debug/render paths that do not require exact backend source matching.
+- Existing test suite passes.
+- Raw UOp examples run.
+- Debug helpers work on copy, shared copy, and canonical tiled GEMM.
+- Compatibility code is small and does not hide normal tinygrad UOp usage.
 
-## Phase 2: Add Tile Views
+## Phase 2: TileView MVP
 
-Add first-class tile objects.
+Goal: introduce one tile abstraction without creating a large class hierarchy.
+
+Start with a single `TileView` object that carries metadata:
+
+- buffer
+- origin
+- shape
+- stride
+- bounds
+- mask
+- layout
+- scope
 
 Target API:
 
@@ -68,33 +106,28 @@ A = k.buffer("A", shape=(M, K), dtype="float16")
 AS = k.shared("AS", shape=(BM, BK), dtype="float16")
 
 a_tile = A.tile(origin=(bm * BM, ko * BK), shape=(BM, BK), bounds=(M, K))
-k.copy(a_tile, AS)
+k.copy(a_tile, AS.tile())
 ```
 
-Tile views should represent metadata, not immediately scalar loops.
+Implementation notes:
 
-Add:
+- Do not add `SharedTile`, `RegisterTile`, or `FragmentTile` classes yet.
+- Represent scope through the underlying buffer/allocation metadata.
+- Lower tile copies to the existing scalar IR first.
+- Keep current scalar indexing APIs working.
 
-- `TileView`
-- `SharedTile`
-- `RegisterTile`
-- `FragmentTile`
-- `Layout`
-- `bounds`
-- `stride`
-- `mask`
-- optional `swizzle`
+Success criteria:
 
-Deliverables:
+- `BufferRef.tile(...)` exists.
+- `k.copy(...)` accepts `TileView` inputs and outputs.
+- At least one copy example and one GEMM example use `TileView`.
+- Generated scalar IR is equivalent to the current handwritten scalar version.
 
-- Tile view classes.
-- Tile view validation.
-- `copy(...)` support for tile views.
-- Examples rewritten to use tile views while preserving current behavior.
+## Phase 3: Tile IR With Scalar Fallback
 
-## Phase 3: Normalize Tile Ops To IR
+Goal: give tile operations stable IR nodes while preserving correctness through scalar fallback.
 
-Add tile-level IR operations before lowering to tinygrad:
+Add tile-level IR incrementally:
 
 ```text
 TileCopy
@@ -102,76 +135,81 @@ TileFill
 TileStore
 TileLoad
 TileMMA
-TileBarrier
 Pipeline
 ```
 
-Initially, lower these to the existing scalar IR so correctness remains easy.
+Do not add every node at once. Start with `TileCopy`, because it maps directly to existing `copy(...)` behavior.
 
-The short-term path should be:
+Lowering path:
 
 ```text
 User tile API -> Tile IR -> scalar fallback IR -> tinygrad UOps
 ```
 
-The long-term path should be:
+Later optimized path:
 
 ```text
-User tile API -> Tile IR -> direct WMMA/vectorized UOps
+User tile API -> Tile IR -> direct vectorized/WMMA UOps
 ```
 
-Deliverables:
+Success criteria:
 
-- Tile IR dataclasses.
-- Tile IR validator.
-- Scalar fallback lowering for tile operations.
-- Tests proving tile ops match existing scalar behavior.
+- Tile IR validates shapes, bounds, dtypes, scopes, and layouts.
+- `TileCopy` scalar fallback passes existing copy and GEMM tests.
+- Tile IR can be printed independently from scalar-expanded IR.
 
-## Phase 4: Real Fragment / WMMA Path
+## Phase 4: Layout And Memory Movement
 
-This is the first performance-critical milestone.
-
-tinygrad has `Ops.WMMA` and renderer support for CUDA, AMD, and Metal paths. TileGrad should eventually lower `TileMMA` or selected `FragmentGemm` cases directly to `Ops.WMMA`.
-
-Roadmap:
-
-- Add `TileMMA` IR.
-- Keep scalar fallback.
-- Add one supported WMMA case first, likely CUDA `float16 x float16 -> float32`.
-- Make validation strict: exact shape, dtype, layout, warp/thread count.
-- Add tests that inspect lowered UOps for `Ops.WMMA`.
-- Add benchmark comparison against tinygrad matmul.
-
-Deliverables:
-
-- One end-to-end WMMA GEMM path.
-- Fallback path for unsupported dtypes/shapes/devices.
-- Tests for both intrinsic and fallback paths.
-- Benchmark results in `benchmarks/bench_gemm.py`.
-
-## Phase 5: Memory Movement
-
-Improve tile movement after the basic WMMA path exists.
+Goal: make tile movement explicit and optimizable before relying on tensor cores.
 
 Focus areas:
 
-- Vectorized global loads/stores.
-- Coalesced copy policies.
-- Shared memory layouts.
-- Padding/swizzling to avoid bank conflicts.
+- Coalesced global loads/stores.
+- Vectorized copy where legal.
+- Shared-memory layout metadata.
+- Padding and swizzle hooks.
 - Masked edge tiles.
 - `copy(..., fill=0)` as a tile primitive, not just scalar loop sugar.
 
-Deliverables:
+Success criteria:
 
-- Explicit copy layout/coalescing options.
-- Shared tile swizzle support.
-- Edge tile masking tests.
-- Copy microbenchmarks.
+- `TileCopy` has explicit layout/coalescing policy hooks.
+- Shared tile layout is represented in IR.
+- Edge/tail copy tests cover masked loads and stores.
+- Copy microbenchmarks exist.
+
+## Phase 5: MMA And WMMA
+
+Goal: turn fragment/MMA intent into a real performance path.
+
+Step 1: define the `TileMMA` contract.
+
+- Validate shape compatibility.
+- Validate dtype compatibility.
+- Validate layout requirements.
+- Keep scalar fallback.
+
+Step 2: lower one supported case to tinygrad `Ops.WMMA`.
+
+- Start with one backend and dtype, likely CUDA `float16 x float16 -> float32`.
+- Require exact supported tile shapes at first.
+- Keep unsupported shapes/dtypes/devices on scalar fallback.
+- Add tests that inspect lowered UOps for `Ops.WMMA`.
+
+Success criteria:
+
+- At least one GEMM path emits `Ops.WMMA`.
+- Unsupported cases fall back cleanly.
+- WMMA path beats scalar fragment GEMM.
+- Benchmarks compare tinygrad matmul, scalar TileGrad GEMM, and WMMA TileGrad GEMM.
 
 ## Phase 6: Real Pipeline
 
-Turn `pipelined(...)` into an actual scheduling primitive.
+Goal: turn `pipelined(...)` from syntax into scheduling semantics.
+
+First target: synchronous double-buffered pipeline.
+
+Later target: async copy/wait groups if tinygrad exposes a stable primitive.
 
 Target API:
 
@@ -182,24 +220,24 @@ with k.pipelined("ko", KTILES, stages=2) as ko:
   k.mma(...)
 ```
 
-Milestones:
+Work:
 
 - Double-buffer shared memory.
-- Separate producer/consumer phases.
+- Separate producer and consumer phases.
 - Insert barriers/waits.
-- Later support async copy if tinygrad exposes a stable primitive for it.
+- Validate stage counts and buffer lifetimes.
 
-Deliverables:
+Success criteria:
 
 - Functional double-buffered shared-memory pipeline.
-- Tests for correctness across tails/edges.
+- Correctness across K tails and M/N edges.
 - Benchmarks against the non-pipelined GEMM path.
 
 ## Phase 7: Autotuning
 
-Once tile parameters matter, add simple autotuning.
+Goal: search TileGrad schedule parameters, not arbitrary tinygrad heuristic rewrites.
 
-Search over TileGrad schedule parameters, not arbitrary UOp rewrites:
+Search space:
 
 - `BM`, `BN`, `BK`
 - thread layout
@@ -207,7 +245,7 @@ Search over TileGrad schedule parameters, not arbitrary UOp rewrites:
 - layout/swizzle
 - WMMA variant where applicable
 
-Deliverables:
+Success criteria:
 
 - Small autotuning API.
 - Benchmark cache by device, dtype, and shape.
@@ -218,15 +256,22 @@ Deliverables:
 
 1. Debug/render tools.
 2. `BufferRef` metadata cleanup.
-3. `TileView` API.
-4. Tile IR with scalar fallback.
-5. Explicit WMMA lowering.
-6. Synchronous tiled copy improvements.
-7. Real pipelining.
-8. Autotuning.
+3. `TileView` MVP.
+4. `TileCopy` IR with scalar fallback.
+5. Layout and memory movement policy.
+6. `TileMMA` contract with scalar fallback.
+7. Explicit `Ops.WMMA` lowering for one case.
+8. Real pipelining.
+9. Autotuning.
 
-## Immediate Next Step
+## Immediate Next Milestone
 
-Implement `TileView` and make `copy(...)` operate on tile views while lowering to the current scalar loop IR.
+Implement the TileView MVP:
 
-This moves TileGrad from "scalar builder with tile-like examples" to an actual tile DSL without taking on WMMA complexity immediately.
+- Add `dtype`, `scope`, and `stride` metadata to `BufferRef`.
+- Add `BufferRef.tile(...)`.
+- Make `k.copy(...)` accept `TileView`.
+- Lower tile copies to the current scalar IR.
+- Rewrite one copy example and one GEMM example to use `TileView`.
+
+This moves TileGrad from "scalar builder with tile-like examples" to a real tile DSL without prematurely building a compiler tower.
