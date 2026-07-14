@@ -614,6 +614,50 @@ class TestRuntime(unittest.TestCase):
     ])
     out_t = Tensor.empty(4)
     self.assertEqual(run(k, out_t, inp_t).tolist(), [6.0, 7.0, 10.0, 11.0])
+  
+  def test_run_tile_view_copy_src_bounds_zero_fills(self):
+    k = KernelBuilder("tile_view_copy_src_bounds_zero_fill", ("out", "inp"))
+    out = k.buffer("out", shape=(2,2), dtype="float32")
+    inp = k.buffer("inp", shape=(3,4), dtype="float32")
+    k.copy(inp.tile(origin=(2,2), shape=(2,2), bounds=(3,4)), out.tile())
+    inp_t = Tensor([
+      1.0, 2.0, 3.0, 4.0,
+      5.0, 6.0, 7.0, 8.0,
+      9.0, 10.0, 11.0, 12.0,
+    ])
+    out_t = Tensor.empty(4)
+    self.assertEqual(run(k, out_t, inp_t).tolist(), [11.0, 12.0, 0.0, 0.0])
+  
+  def test_run_tile_view_copy_src_mask_zero_fills(self):
+    k = KernelBuilder("tile_view_copy_src_mask_zero_fill", ("out", "inp"))
+    out = k.buffer("out", shape=(4,), dtype="float32")
+    inp = k.buffer("inp", shape=(4,), dtype="float32")
+    k.copy(inp.tile(mask=Var("_c0_i0") < 3), out.tile())
+    inp_t = Tensor([1.0, 2.0, 3.0, 99.0])
+    out_t = Tensor.empty(4)
+    self.assertEqual(run(k, out_t, inp_t).tolist(), [1.0, 2.0, 3.0, 0.0])
+  
+  def test_run_tile_view_copy_dst_bounds_guards_store(self):
+    k = KernelBuilder("tile_view_copy_dst_bounds_guard", ("out", "inp"))
+    out = k.buffer("out", shape=(3,3), dtype="float32")
+    inp = k.buffer("inp", shape=(2,2), dtype="float32")
+    k.copy(inp.tile(), out.tile(origin=(2,2), shape=(2,2), bounds=(3,3)))
+    inp_t = Tensor([1.0, 2.0, 3.0, 4.0])
+    out_t = Tensor([9.0] * 9)
+    self.assertEqual(run(k, out_t, inp_t).tolist(), [
+      9.0, 9.0, 9.0,
+      9.0, 9.0, 9.0,
+      9.0, 9.0, 1.0,
+    ])
+  
+  def test_run_tile_view_copy_dst_mask_guards_store(self):
+    k = KernelBuilder("tile_view_copy_dst_mask_guard", ("out", "inp"))
+    out = k.buffer("out", shape=(4,), dtype="float32")
+    inp = k.buffer("inp", shape=(4,), dtype="float32")
+    k.copy(inp.tile(), out.tile(mask=Var("_c0_i0") < 3))
+    inp_t = Tensor([1.0, 2.0, 3.0, 4.0])
+    out_t = Tensor([9.0, 9.0, 9.0, 9.0])
+    self.assertEqual(run(k, out_t, inp_t).tolist(), [1.0, 2.0, 3.0, 9.0])
 
 if __name__ == "__main__":
   unittest.main()

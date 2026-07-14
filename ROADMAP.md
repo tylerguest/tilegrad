@@ -18,8 +18,37 @@ TileGrad is already a useful proof-of-concept:
 - It lowers explicit `grid`, `threads`, `range`, `reduce`, `unroll`, `shared`, `register`, and `barrier` to tinygrad UOps.
 - It has correctness coverage for copy, shared memory, guarded loads/stores, reductions, fragments, edge GEMM, and grid/thread GEMM.
 - It defaults to `KernelInfo(opts_to_apply=())`, which is the right default for an explicit scheduling DSL.
+- It has a first `TileView` MVP: buffers carry `dtype`, `scope`, and `stride` metadata, and `copy(...)` accepts tile views while lowering through the existing scalar IR.
 
-The main gap is that TileGrad is still mostly a scalar kernel builder. The next step is not a big compiler stack; it is a small tile layer on top of the existing scalar IR.
+The main gap is that TileGrad tile operations still immediately scalar-expand into the existing IR. The next step is not a big compiler stack; it is a stable tile IR node for copy with scalar fallback.
+
+## Status Snapshot
+
+Completed:
+
+- Core scalar `KernelBuilder`, IR, validator, and tinygrad UOp lowerer.
+- Explicit schedule lowering for `grid`, `threads`, serial ranges, reduce ranges, unroll ranges, shared/register allocations, barriers, and guarded memory operations.
+- Fragment GEMM scalar fallback and grid/thread GEMM coverage.
+- Default TileGrad lowering opts out of tinygrad heuristic scheduling with `KernelInfo(opts_to_apply=())`.
+- Current tinygrad UOp API compatibility fixes for dtype scalar access, pointer indexing, and explicit kernel info.
+- `BufferRef` metadata for `dtype`, `scope`, and default 2D stride.
+- `TileView` metadata object with origin, shape, stride, bounds, mask, and layout fields.
+- `BufferRef.tile(...)`, `KernelBuilder.shared(...)`, and `KernelBuilder.register(...)` helpers.
+- `copy(...)` accepts `TileView` inputs and outputs and lowers to the current scalar copy IR.
+- A TileView shared-copy example and TileView copy tests.
+
+Partially complete:
+
+- Phase 1 core stability is mostly complete, but public debug/render helpers and a dedicated tinygrad compatibility adapter are still pending.
+- Phase 2 TileView MVP has copy support, but still needs hardening around validation, edge cases, and a TileView-based GEMM example.
+
+Not started:
+
+- Tile-level IR nodes such as `TileCopy`.
+- Layout/coalescing/vectorized copy policies.
+- `TileMMA` contract and explicit `Ops.WMMA` lowering.
+- Real pipeline semantics.
+- Autotuning.
 
 ## Design Principles
 
@@ -69,11 +98,13 @@ tinygrad should own:
 
 Goal: make the existing scalar builder and lowerer easier to evolve without adding a large abstraction layer.
 
+Status: mostly complete.
+
 Work:
 
-- Keep `KernelBuilder` as the core frontend.
-- Keep `opts_to_apply=()` as the default for TileGrad-lowered kernels.
-- Add explicit `dtype`, `scope`, `shape`, and `stride` metadata to `BufferRef`.
+- Done: keep `KernelBuilder` as the core frontend.
+- Done: keep `opts_to_apply=()` as the default for TileGrad-lowered kernels.
+- Done: add explicit `dtype`, `scope`, `shape`, and `stride` metadata to `BufferRef`.
 - Add public debug helpers for TileGrad IR, expanded IR, lowered UOps, and generated source.
 - Add a small tinygrad UOp adapter only for APIs that have already shown churn: scalar dtype, index/load/store, placeholders, ranges, and `KernelInfo`.
 
@@ -87,6 +118,8 @@ Success criteria:
 ## Phase 2: TileView MVP
 
 Goal: introduce one tile abstraction without creating a large class hierarchy.
+
+Status: copy path implemented, hardening still pending.
 
 Start with a single `TileView` object that carries metadata:
 
@@ -111,17 +144,18 @@ k.copy(a_tile, AS.tile())
 
 Implementation notes:
 
-- Do not add `SharedTile`, `RegisterTile`, or `FragmentTile` classes yet.
-- Represent scope through the underlying buffer/allocation metadata.
-- Lower tile copies to the existing scalar IR first.
-- Keep current scalar indexing APIs working.
+- Done: do not add `SharedTile`, `RegisterTile`, or `FragmentTile` classes yet.
+- Done: represent scope through the underlying buffer/allocation metadata.
+- Done: lower tile copies to the existing scalar IR first.
+- Done: keep current scalar indexing APIs working.
 
 Success criteria:
 
-- `BufferRef.tile(...)` exists.
-- `k.copy(...)` accepts `TileView` inputs and outputs.
-- At least one copy example and one GEMM example use `TileView`.
-- Generated scalar IR is equivalent to the current handwritten scalar version.
+- Done: `BufferRef.tile(...)` exists.
+- Done: `k.copy(...)` accepts `TileView` inputs and outputs.
+- Done: at least one copy example uses `TileView`.
+- Pending: one GEMM example uses `TileView`.
+- Pending: generated scalar IR is equivalent to the current handwritten scalar version across the full existing copy/GEMM suite.
 
 ## Phase 3: Tile IR With Scalar Fallback
 
@@ -254,24 +288,24 @@ Success criteria:
 
 ## Priority Order
 
-1. Debug/render tools.
-2. `BufferRef` metadata cleanup.
-3. `TileView` MVP.
-4. `TileCopy` IR with scalar fallback.
-5. Layout and memory movement policy.
-6. `TileMMA` contract with scalar fallback.
-7. Explicit `Ops.WMMA` lowering for one case.
-8. Real pipelining.
-9. Autotuning.
+1. Finish TileView MVP hardening.
+2. Add debug/render tools.
+3. Add a small tinygrad compatibility adapter.
+4. Add `TileCopy` IR with scalar fallback.
+5. Add layout and memory movement policy.
+6. Add `TileMMA` contract with scalar fallback.
+7. Add explicit `Ops.WMMA` lowering for one case.
+8. Add real pipelining.
+9. Add autotuning.
 
 ## Immediate Next Milestone
 
-Implement the TileView MVP:
+Finish and harden the TileView MVP:
 
-- Add `dtype`, `scope`, and `stride` metadata to `BufferRef`.
-- Add `BufferRef.tile(...)`.
-- Make `k.copy(...)` accept `TileView`.
-- Lower tile copies to the current scalar IR.
-- Rewrite one copy example and one GEMM example to use `TileView`.
+- Validate TileView source/destination shape mismatches.
+- Preserve explicit empty-shape errors in `copy(...)`.
+- Add TileView edge-case tests for shape mismatch, bounds, masks, and destination guards.
+- Rewrite one GEMM example to use `TileView` while preserving current scalar fallback behavior.
+- Run the full test suite and the TileView examples.
 
-This moves TileGrad from "scalar builder with tile-like examples" to a real tile DSL without prematurely building a compiler tower.
+After that, add `TileCopy` as the first tile-level IR node and lower it back to the current scalar IR before attempting vectorized copies or WMMA.

@@ -1091,6 +1091,25 @@ class TestBuilder(unittest.TestCase):
       ),
     )
     self.assertEqual(k.build(), expected)
+  
+  def test_copy_tile_view_shape_mismatch_fails(self):
+    k = KernelBuilder("tile_copy_bad_shape", ("out", "inp"))
+    out = k.buffer("out", shape=(2,3), dtype="float32")
+    inp = k.buffer("inp", shape=(3,2), dtype="float32")
+    with self.assertRaisesRegex(ValueError, "tile copy shape mismatch"): k.copy(inp.tile(), out.tile())
+  
+  def test_copy_tile_view_explicit_shape_mismatch_fails(self):
+    k = KernelBuilder("tile_copy_bad_explicit_shape", ("out", "inp"))
+    out = k.buffer("out", shape=(2,2), dtype="float32")
+    inp = k.buffer("inp", shape=(2,3), dtype="float32")
+    with self.assertRaisesRegex(ValueError, "tile copy shape mismatch"): k.copy(inp.tile(), out.tile(), shape=(2,2))
+  
+  def test_copy_preserves_explicit_empty_shape_error(self):
+    k = KernelBuilder("copy_empty_shape", ("out", "inp"))
+    out = k.buffer("out", shape=(4,), dtype="float32")
+    inp = k.buffer("inp", shape=(4,), dtype="float32")
+    with self.assertRaisesRegex(ValueError, "copy shape must not be empty"): k.copy(inp, out, shape=())
+
 
       
 if __name__ == "__main__":

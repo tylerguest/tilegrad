@@ -111,6 +111,15 @@ def _copy_shape(src, dst, shape):
   if isinstance(src, BufferRef) and src.shape is not None: return src.shape
   raise ValueError("copy shape is required unless a shaped buffer ref is provided")
 
+def _infer_tile_copy_shape(src_tile, dst_tile):
+  if dst_tile is not None: return dst_tile.shape
+  if src_tile is not None: return src_tile.shape
+  return None
+
+def _validate_tile_copy_shape(tile, shape, role):
+  if tile is not None and tile.shape != shape:
+    raise ValueError(f"tile copy shape mismatch: {role} tile shape {tile.shape} != copy shape {shape}")
+
 def _copy_stride(buffer, stride, shape, name):
   if len(shape) != 2: return stride
   if stride is not None: return stride
@@ -216,12 +225,14 @@ class KernelBuilder:
     dst_tile = dst if isinstance(dst, TileView) else None
     src_ref = _buffer_ref(src)
     dst_ref = _buffer_ref(dst)
-    shape = shape or (dst_tile.shape if dst_tile is not None else src_tile.shape if src_tile is not None else None)
+    if shape is None: shape = _infer_tile_copy_shape(src_tile, dst_tile)
     shape = _copy_shape(src_ref, dst_ref, shape)
     if not isinstance(shape, tuple): raise TypeError("copy shape must be a tuple")
     if len(shape) == 0: raise ValueError("copy shape must not be empty")
     if len(shape) > 3: raise NotImplementedError(f"copy does not support {len(shape)}D")
     if fill not in (None, 0): raise NotImplementedError("copy only supports fill=0")
+    _validate_tile_copy_shape(src_tile, shape, "source")
+    _validate_tile_copy_shape(dst_tile, shape, "destination")
 
     if src_origin is None:
       src_origin = src_tile.origin if src_tile is not None else (src_row_off, src_col_off) if len(shape) >= 2 or stride is not None else (src_col_off,) 

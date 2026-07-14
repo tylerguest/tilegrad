@@ -5,27 +5,19 @@ k = KernelBuilder("tilegrad_builder_tiled_gemm_bm_bn_accum_tile", ("out", "a", "
 k.alloc("as", 6, "float32")
 k.alloc("bs", 6, "float32")
 
-out = k.buffer("out", shape=(3, 3))
-a = k.buffer("a", shape=(3, 5))
-b = k.buffer("b", shape=(5, 3))
-as_tile = k.buffer("as", shape=(2, 3))
-bs_tile = k.buffer("bs", shape=(3, 2))
+out = k.buffer("out", shape=(3, 3), dtype="float32")
+a = k.buffer("a", shape=(3, 5), dtype="float32")
+b = k.buffer("b", shape=(5, 3), dtype="float32")
+as_tile = k.buffer("as", shape=(2, 3), dtype="float32")
+bs_tile = k.buffer("bs", shape=(3, 2), dtype="float32")
 acc = k.fragment("acc", (2, 2), "float32")
 
 with k.range("bi", 2) as bi:
   with k.range("bj", 2) as bj:
     k.clear(acc)
     for ko in range(2):
-      with k.range("ii", 2) as ii:
-        gi = bi * 2 + ii
-        with k.range("kk", 3) as kk:
-          gk = ko * 3 + kk
-          k.store(as_tile, (ii, kk), k.load_if((gi < 3) & (gk < 5), a, (gi, gk)))
-      with k.range("kk", 3) as kk:
-        gk = ko * 3 + kk
-        with k.range("jj", 2) as jj:
-          gj = bj * 2 + jj
-          k.store(bs_tile, (kk, jj), k.load_if((gk < 5) & (gj < 3), b, (gk, gj)))
+      k.copy(a.tile(origin=(bi*2, ko*3), shape=(2,3), bounds=(3,5)), as_tile.tile())
+      k.copy(b.tile(origin=(ko*3, bj*2), shape=(3,2), bounds=(5,3)), bs_tile.tile())
       k.barrier()
       k.gemm(as_tile, bs_tile, acc)
     k.store_fragment(acc, out, (bi * 2, bj * 2), bounds=(3, 3))
