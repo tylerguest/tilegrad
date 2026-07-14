@@ -1109,8 +1109,6 @@ class TestBuilder(unittest.TestCase):
     out = k.buffer("out", shape=(4,), dtype="float32")
     inp = k.buffer("inp", shape=(4,), dtype="float32")
     with self.assertRaisesRegex(ValueError, "copy shape must not be empty"): k.copy(inp, out, shape=())
-
-
       
 if __name__ == "__main__":
   unittest.main()
