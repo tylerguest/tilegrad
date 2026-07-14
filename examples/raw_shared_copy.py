@@ -5,19 +5,19 @@ from tinygrad.uop.ops import AxisType, KernelInfo, UOp
 
 def shared_copy_kernel(out: UOp, inp: UOp) -> UOp:
   n = out.max_numel()
-  smem = UOp.placeholder((n,), out.dtype.base, slot=0, addrspace=AddrSpace.LOCAL)
+  smem = UOp.placeholder((n,), out.dtype.scalar(), slot=0, addrspace=AddrSpace.LOCAL)
 
   i = UOp.range(n, 0, AxisType.LOOP)
-  src = inp.flatten().index(i, ptr=True).load()
-  smem_store = smem.index(i, ptr=True).store(src).end(i)
+  src = inp.flatten().index(i).load()
+  smem_store = smem.index(i).store(src).end(i)
 
   bar = smem_store.barrier()
 
   j = UOp.range(n, 1, AxisType.LOOP)
-  val = smem.after(bar).index(j, ptr=True).load()
-  out_store = out.flatten().index(j, ptr=True).store(val).end(j)
+  val = smem.after(bar).index(j).load()
+  out_store = out.flatten().index(j).store(val).end(j)
 
-  return out_store.sink(arg=KernelInfo(name="tilegrad_raw_shared_copy"))
+  return out_store.sink(arg=KernelInfo(name="tilegrad_raw_shared_copy", opts_to_apply=()))
 
 
 if __name__ == "__main__":

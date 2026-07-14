@@ -135,10 +135,10 @@ def lower_store_if(stmt, env, effects, sink_effects, buffer_effects, pending_sha
     for dep in shared_read_effects.get(stmt.buffer, ()): buf = buf.after(dep)
   else: buf = (base if needs_order else _strip_after(base)).flatten()
   if needs_order: buf = buf.after(buffer_effects[stmt.buffer])
-  if isinstance(val, UOp) and val.dtype != base.dtype.base: val = val.cast(base.dtype.base)
+  if isinstance(val, UOp) and val.dtype != base.dtype.scalar(): val = val.cast(base.dtype.scalar())
   idx = lower_index(idx)
   guarded_idx = cond.where(idx, idx.const_like(Invalid)) if isinstance(cond, UOp) else idx if cond else idx.const_like(Invalid)
-  effect = buf.index(guarded_idx, ptr=True).store(val)
+  effect = buf.index(guarded_idx).store(val)
   if base.addrspace is AddrSpace.LOCAL:
     buffer_effects[stmt.buffer] = effect
     pending_shared.append((effect, active_ranges))
@@ -160,8 +160,8 @@ def lower_store(stmt, env, effects, sink_effects, buffer_effects, pending_shared
     for dep in shared_read_effects.get(stmt.buffer, ()): buf = buf.after(dep)
   else: buf = (base if needs_order else _strip_after(base)).flatten()
   if needs_order: buf = buf.after(buffer_effects[stmt.buffer])
-  if isinstance(val, UOp) and val.dtype != base.dtype.base: val = val.cast(base.dtype.base)
-  effect = buf.index(lower_index(idx), ptr=True).store(val)
+  if isinstance(val, UOp) and val.dtype != base.dtype.scalar(): val = val.cast(base.dtype.scalar())
+  effect = buf.index(lower_index(idx)).store(val)
   if base.addrspace is AddrSpace.LOCAL:
     buffer_effects[stmt.buffer] = effect
     pending_shared.append((effect, active_ranges))
@@ -345,5 +345,5 @@ def lower_kernel(kernel, *args: UOp) -> UOp:
   sinks = _group_independent_sink_effects(sink_effects)
   sinks += [env[arg.name] for arg in kernel.args if arg.name in updated_buffers]
   if not sinks: raise ValueError("kernel must produce at least one effect")
-  info = KernelInfo(name=kernel.name, opts_to_apply=()) if updated_buffers else KernelInfo(name=kernel.name)
+  info = KernelInfo(name=kernel.name, opts_to_apply=())
   return UOp.sink(*sinks, arg=info)
