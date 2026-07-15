@@ -18,9 +18,10 @@ TileGrad is already a useful proof-of-concept:
 - It lowers explicit `grid`, `threads`, `range`, `reduce`, `unroll`, `shared`, `register`, and `barrier` to tinygrad UOps.
 - It has correctness coverage for copy, shared memory, guarded loads/stores, reductions, fragments, edge GEMM, and grid/thread GEMM.
 - It defaults to `KernelInfo(opts_to_apply=())`, which is the right default for an explicit scheduling DSL.
-- It has a first `TileView` MVP: buffers carry `dtype`, `scope`, and `stride` metadata, and `copy(...)` accepts tile views while lowering through the existing scalar IR.
+- It has a hardened `TileView` MVP: buffers carry `dtype`, `scope`, and `stride` metadata, and `copy(...)` accepts tile views with shape, bounds, mask, and destination-guard coverage.
+- It has a first tile-level IR node: `TileCopy` preserves copy intent in `k.build()` and expands through scalar fallback before tinygrad UOp lowering.
 
-The main gap is that TileGrad tile operations still immediately scalar-expand into the existing IR. The next step is not a big compiler stack; it is a stable tile IR node for copy with scalar fallback.
+The main gap is no longer preserving copy intent. The next step is to harden unexpanded tile IR validation and debugging before adding layout/coalescing/vectorized copy policies.
 
 ## Status Snapshot
 
@@ -34,17 +35,20 @@ Completed:
 - `BufferRef` metadata for `dtype`, `scope`, and default 2D stride.
 - `TileView` metadata object with origin, shape, stride, bounds, mask, and layout fields.
 - `BufferRef.tile(...)`, `KernelBuilder.shared(...)`, and `KernelBuilder.register(...)` helpers.
-- `copy(...)` accepts `TileView` inputs and outputs and lowers to the current scalar copy IR.
-- A TileView shared-copy example and TileView copy tests.
+- `copy(...)` accepts `TileView` inputs and outputs.
+- TileView copy hardening for shape mismatches, explicit empty shapes, bounds, masks, and destination guards.
+- A TileView shared-copy example, a TileView GEMM example, and TileView copy tests.
+- `TileCopy` IR node for copy intent.
+- `expand_tile_copies(...)` scalar fallback pass.
+- A TileCopy inspection example showing tile IR, expanded scalar IR, and runtime output.
 
 Partially complete:
 
 - Phase 1 core stability is mostly complete, but public debug/render helpers and a dedicated tinygrad compatibility adapter are still pending.
-- Phase 2 TileView MVP has copy support, but still needs hardening around validation, edge cases, and a TileView-based GEMM example.
+- Phase 3 Tile IR has `TileCopy` with scalar fallback, but unexpanded tile IR validation and public debug helpers still need hardening.
 
 Not started:
 
-- Tile-level IR nodes such as `TileCopy`.
 - Layout/coalescing/vectorized copy policies.
 - `TileMMA` contract and explicit `Ops.WMMA` lowering.
 - Real pipeline semantics.
@@ -119,7 +123,7 @@ Success criteria:
 
 Goal: introduce one tile abstraction without creating a large class hierarchy.
 
-Status: copy path implemented, hardening still pending.
+Status: complete for the current MVP.
 
 Start with a single `TileView` object that carries metadata:
 
@@ -146,7 +150,7 @@ Implementation notes:
 
 - Done: do not add `SharedTile`, `RegisterTile`, or `FragmentTile` classes yet.
 - Done: represent scope through the underlying buffer/allocation metadata.
-- Done: lower tile copies to the existing scalar IR first.
+- Done: emit `TileCopy` for tile copies and lower through scalar fallback.
 - Done: keep current scalar indexing APIs working.
 
 Success criteria:
@@ -154,12 +158,15 @@ Success criteria:
 - Done: `BufferRef.tile(...)` exists.
 - Done: `k.copy(...)` accepts `TileView` inputs and outputs.
 - Done: at least one copy example uses `TileView`.
-- Pending: one GEMM example uses `TileView`.
-- Pending: generated scalar IR is equivalent to the current handwritten scalar version across the full existing copy/GEMM suite.
+- Done: one GEMM example uses `TileView`.
+- Done: TileView edge-case tests cover shape mismatch, bounds, masks, and destination guards.
+- Done: generated scalar fallback preserves current copy/GEMM behavior across the existing test suite.
 
 ## Phase 3: Tile IR With Scalar Fallback
 
 Goal: give tile operations stable IR nodes while preserving correctness through scalar fallback.
+
+Status: started. `TileCopy` exists and runs through scalar fallback; validation/debug hardening is next.
 
 Add tile-level IR incrementally:
 
@@ -188,9 +195,10 @@ User tile API -> Tile IR -> direct vectorized/WMMA UOps
 
 Success criteria:
 
-- Tile IR validates shapes, bounds, dtypes, scopes, and layouts.
-- `TileCopy` scalar fallback passes existing copy and GEMM tests.
-- Tile IR can be printed independently from scalar-expanded IR.
+- Pending: Tile IR validates shapes, bounds, dtypes, scopes, and layouts before expansion.
+- Done: `TileCopy` scalar fallback passes existing copy and GEMM tests.
+- Done: Tile IR can be printed independently from scalar-expanded IR through the TileCopy inspection example.
+- Pending: public helpers expose unexpanded TileGrad IR, expanded scalar IR, lowered UOps, and generated source.
 
 ## Phase 4: Layout And Memory Movement
 
@@ -288,24 +296,23 @@ Success criteria:
 
 ## Priority Order
 
-1. Finish TileView MVP hardening.
-2. Add debug/render tools.
-3. Add a small tinygrad compatibility adapter.
-4. Add `TileCopy` IR with scalar fallback.
-5. Add layout and memory movement policy.
-6. Add `TileMMA` contract with scalar fallback.
-7. Add explicit `Ops.WMMA` lowering for one case.
-8. Add real pipelining.
-9. Add autotuning.
+1. Harden `TileCopy` validation and public debug/inspect helpers.
+2. Add a small tinygrad compatibility adapter.
+3. Add layout and memory movement policy hooks for `TileCopy`.
+4. Add copy microbenchmarks.
+5. Add `TileMMA` contract with scalar fallback.
+6. Add explicit `Ops.WMMA` lowering for one case.
+7. Add real pipelining.
+8. Add autotuning.
 
 ## Immediate Next Milestone
 
-Finish and harden the TileView MVP:
+Harden `TileCopy` as public tile IR:
 
-- Validate TileView source/destination shape mismatches.
-- Preserve explicit empty-shape errors in `copy(...)`.
-- Add TileView edge-case tests for shape mismatch, bounds, masks, and destination guards.
-- Rewrite one GEMM example to use `TileView` while preserving current scalar fallback behavior.
-- Run the full test suite and the TileView examples.
+- Add `validate_tile_copy(...)` so unexpanded `TileCopy` kernels validate source/destination buffers, shape, origins, bounds, masks, guards, strides, fill, and layouts.
+- Add TileCopy validation tests for valid copies, unknown buffers, empty shapes, bad origin rank, bad bounds rank, and unknown mask/guard variables.
+- Add small public inspect helpers for unexpanded TileGrad IR and expanded scalar fallback IR.
+- Keep `lower_kernel(...)` on the safe path: `TileCopy -> scalar fallback IR -> tinygrad UOps`.
+- Run the full test suite plus `examples/builder_tilecopy_inspect.py` and the TileView GEMM example.
 
-After that, add `TileCopy` as the first tile-level IR node and lower it back to the current scalar IR before attempting vectorized copies or WMMA.
+After that, add layout/coalescing policy hooks to `TileCopy` before attempting vectorized copies, async copies, or WMMA.

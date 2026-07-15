@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from tilegrad.ir import Add, Alloc, Arg, Barrier, FragmentAlloc, FragmentClear, FragmentGemm, FragmentStore, Index2D, Kernel, Load, LoadIf, Mul, Not, Range, Set, SetIf, Store, StoreIf, Var
+from tilegrad.ir import Add, Alloc, Arg, Barrier, FragmentAlloc, FragmentClear, FragmentGemm, FragmentStore, Index2D, Kernel, Load, LoadIf, Mul, Not, Range, Set, SetIf, Store, StoreIf, TileCopy, Var
 
 @dataclass(frozen=True)
 class TileView:
@@ -247,12 +247,34 @@ class KernelBuilder:
     src_stride = _copy_stride(src_ref, src_stride, shape, "src")
     dst_stride = _copy_stride(dst_ref, dst_stride, shape, "dst")
 
-    src = _buffer_name(src_ref)
-    dst = _buffer_name(dst_ref)
+    src_name = _buffer_name(src_ref)
+    dst_name = _buffer_name(dst_ref)
     n = self._copy_counter
     self._copy_counter += 1
 
     names = tuple(f"_c{n}_i{i}" for i in range(len(shape)))
+
+    if src_tile is not None or dst_tile is not None:
+      self._current_body().append(TileCopy(
+        src=src_name,
+        dst=dst_name,
+        shape=shape,
+        src_origin=src_origin,
+        dst_origin=dst_origin,
+        src_stride=src_stride,
+        dst_stride=dst_stride,
+        src_bounds=src_tile.bounds if src_tile is not None else None,
+        dst_bounds=dst_tile.bounds if dst_tile is not None else None,
+        src_mask=src_tile.mask if src_tile is not None else None,
+        dst_mask=dst_tile.mask if dst_tile is not None else None,
+        guard=guard,
+        fill=fill,
+        src_layout=src_tile.layout if src_tile is not None else None,
+        dst_layout=dst_tile.layout if dst_tile is not None else None,
+        index_names=names,
+      ))
+      return
+
     src_idx = _copy_src_index(names, shape, src_origin, src_stride)
     dst_idx = _copy_dst_index(names, shape, dst_origin, dst_stride)
 
@@ -264,10 +286,10 @@ class KernelBuilder:
     elif guard is not None:
       store_guard = _and(store_guard, guard) 
     
-    value = Load(src, src_idx)
-    if load_guard is not None: value = LoadIf(load_guard, src, src_idx)
+    value = Load(src_name, src_idx)
+    if load_guard is not None: value = LoadIf(load_guard, src_name, src_idx)
 
-    stmt = StoreIf(store_guard, dst, dst_idx, value) if store_guard is not None else Store(dst, dst_idx, value)
+    stmt = StoreIf(store_guard, dst_name, dst_idx, value) if store_guard is not None else Store(dst_name, dst_idx, value)
     
     body = (stmt,)
     for name, extent in reversed(tuple(zip(names, shape))):

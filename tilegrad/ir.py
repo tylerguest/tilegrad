@@ -158,6 +158,25 @@ class FragmentStore(Stmt):
   bounds: tuple[object, object] | None = None
 
 @dataclass(frozen=True)
+class TileCopy(Stmt, KernelOp):
+  src: str
+  dst: str
+  shape: tuple
+  src_origin: tuple
+  dst_origin: tuple
+  src_stride: object | None = None
+  dst_stride: object | None = None
+  src_bounds: tuple | None = None
+  dst_bounds: tuple | None = None
+  src_mask: object | None = None
+  dst_mask: object | None = None
+  guard: object | None = None
+  fill: object | None = None
+  src_layout: object | None = None
+  dst_layout: object | None = None
+  index_names: tuple[str, ...] = ()
+
+@dataclass(frozen=True)
 class Range(Stmt, KernelOp):
   name: str
   extent: int | str

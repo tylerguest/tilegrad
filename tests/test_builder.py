@@ -1,8 +1,9 @@
 import unittest
 from tinygrad import Tensor
 from tilegrad.builder import KernelBuilder
-from tilegrad.ir import Add, Alloc, Arg, Barrier, FragmentAlloc, FragmentClear, FragmentGemm, FragmentStore, Index2D, Kernel, Load, LoadIf, Mul, Range, Set, SetIf, Store, Var, And, Lt, StoreIf
+from tilegrad.ir import Add, Alloc, Arg, Barrier, FragmentAlloc, FragmentClear, FragmentGemm, FragmentStore, Index2D, Kernel, Load, LoadIf, Mul, Range, TileCopy, Set, SetIf, Store, Var, And, Lt, StoreIf
 from tilegrad.lowerer import lower_kernel
+from tilegrad.tiles import expand_tile_copies
 
 class TestBuilder(unittest.TestCase):
   def test_builder_fragment_alloc_ir(self):
@@ -1075,6 +1076,30 @@ class TestBuilder(unittest.TestCase):
       "tile_copy",
       (Arg("out"), Arg("inp")),
       (
+        TileCopy(
+          src="inp",
+          dst="out",
+          shape=(2,3),
+          src_origin=(1,2),
+          dst_origin=(0,0),
+          src_stride=5,
+          dst_stride=3,
+          src_bounds=(4,5),
+          index_names=("_c0_i0", "_c0_i1"),
+        ),
+      ),
+    )
+    self.assertEqual(k.build(), expected)
+  
+  def test_tile_copy_expands_to_scalar_ir(self):
+    k = KernelBuilder("tile_copy", ("out", "inp"))
+    out = k.buffer("out", shape=(2, 3), dtype="float32")
+    inp = k.buffer("inp", shape=(4, 5), dtype="float32")
+    k.copy(inp.tile(origin=(1, 2), shape=(2, 3), bounds=(4, 5)), out.tile())
+    expected = Kernel(
+      "tile_copy",
+      (Arg("out"), Arg("inp")),
+      (
         Range("_c0_i0", 2, (
           Range("_c0_i1", 3, (
             Store(
@@ -1090,7 +1115,7 @@ class TestBuilder(unittest.TestCase):
         )),
       ),
     )
-    self.assertEqual(k.build(), expected)
+    self.assertEqual(expand_tile_copies(k.build()), expected)
   
   def test_copy_tile_view_shape_mismatch_fails(self):
     k = KernelBuilder("tile_copy_bad_shape", ("out", "inp"))
