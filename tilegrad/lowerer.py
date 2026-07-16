@@ -102,7 +102,6 @@ def lower_expr(expr, env, indices, recurrence_buffer=None, recurrence_range=None
   if isinstance(expr, Not):
     x = lower_expr(expr.x, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode)
     return x.logical_not()
-
   if isinstance(expr, Index2D):
     row = lower_expr(expr.row, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode)
     col = lower_expr(expr.col, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode)
@@ -112,8 +111,7 @@ def lower_expr(expr, env, indices, recurrence_buffer=None, recurrence_range=None
   if isinstance(expr, Load): return lower_load(expr, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode)
   raise NotImplementedError(type(expr).__name__)
 
-def _store_key(stmt):
-  return repr(stmt.index)
+def _store_key(stmt): return repr(stmt.index)
 
 def _needs_store_order(stmt, active_ranges, store_state):
   prev = store_state.get(stmt.buffer)
@@ -200,12 +198,9 @@ def lower_set(stmt, env, updated_buffers, local_updated, shared_read_effects, in
       recurrence_range=recurrence_range, recurrence_uop=recurrence_uop, value_mode=True,
     )
     val = cond_uop.where(val, target) if isinstance(cond_uop, UOp) else val if cond_uop else target
-  if axis == "reduce":
-    ends = _dedup_ranges(recurrence_range, *register_end_ranges)
-  elif cond is not None:
-    ends = register_end_ranges
-  else:
-    ends = ()
+  if axis == "reduce": ends = _dedup_ranges(recurrence_range, *register_end_ranges)
+  elif cond is not None: ends = register_end_ranges
+  else: ends = ()
   next_buf = target.set(val, end=ends) if ends else target.set(val)
   if is_register:
     deps = _after_deps(next_buf)
@@ -228,8 +223,7 @@ def lower_range(op, env, effects, sink_effects, buffer_effects, pending_shared, 
   active_ranges = active_ranges + (i,)
   local_updated = set()
   for stmt in op.body:
-    if isinstance(stmt, Range): local_updated |= lower_range(stmt, env, effects, sink_effects, buffer_effects, pending_shared, 
-                                                             store_state, shared_read_effects, updated_buffers, indices, range_slots, register_scopes, active_ranges)
+    if isinstance(stmt, Range): local_updated |= lower_range(stmt, env, effects, sink_effects, buffer_effects, pending_shared, store_state, shared_read_effects, updated_buffers, indices, range_slots, register_scopes, active_ranges)
     elif isinstance(stmt, Store): lower_store(stmt, env, effects, sink_effects, buffer_effects, pending_shared, store_state, shared_read_effects, indices, active_ranges)
     elif isinstance(stmt, StoreIf): lower_store_if(stmt, env, effects, sink_effects, buffer_effects, pending_shared, store_state, shared_read_effects, indices, active_ranges)
     elif isinstance(stmt, SetIf): lower_set(stmt, env, updated_buffers, local_updated, shared_read_effects, indices, active_ranges, op.axis, register_scopes, cond=stmt.cond)
@@ -308,12 +302,24 @@ def _group_independent_sink_effects(sink_effects):
       out.append(UOp.group(*(x.src[0] for x in group)).end(*ranges))
   return out
 
-def lower_kernel(kernel, *args: UOp) -> UOp:
+def prepare_kernel_stages(kernel):
   validate_tile_copies(kernel)
+  stages = [("tile_ir", kernel)]
   kernel = expand_tile_copies(kernel)
+  stages.append(("expand_tile_copies", kernel))
   kernel = expand_fragments(kernel)
+  stages.append(("expand_fragments", kernel))
   kernel = unroll_register_tiles(kernel)
+  stages.append(("unroll_register_tiles", kernel))
   validate_kernel(kernel)
+  stages.append(("scalar_ir", kernel))
+  return tuple(stages)
+
+def prepare_kernel_for_lowering(kernel):
+  return prepare_kernel_stages(kernel)[-1][1]
+
+def lower_kernel(kernel, *args: UOp) -> UOp:
+  kernel = prepare_kernel_for_lowering(kernel)
   if len(args) != len(kernel.args): raise ValueError(f"expected {len(kernel.args)} args, got {len(args)}")
   env = {arg.name: uop for arg, uop in zip(kernel.args, args)}
   effects = []

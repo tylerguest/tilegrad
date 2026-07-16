@@ -1,6 +1,6 @@
 from tinygrad import Tensor
 from tilegrad import KernelBuilder, run
-from tilegrad.tiles import expand_tile_copies
+from tilegrad.debug import inspect_kernel
 from tilegrad.ir import TileCopy
 
 k = KernelBuilder("tilecopy_inspect", ("out", "inp"))
@@ -12,8 +12,9 @@ k.copy(
   out.tile(),
 )
 
-ir = k.build()
-expanded_ir = expand_tile_copies(ir)
+dbg = inspect_kernel(k)
+ir = dbg.tile_ir
+expanded_ir = dbg.scalar_ir
 
 print("Tile IR:")
 print(ir)
@@ -25,6 +26,10 @@ print()
 
 print("Expanded scalar fallback IR:")
 print(expanded_ir)
+print()
+
+print("TileGrad IR stages:")
+print([stage.name for stage in dbg.stages])
 print()
 
 if __name__ == "__main__":

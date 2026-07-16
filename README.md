@@ -272,7 +272,25 @@ The fragment baselines are intentionally limited to small sizes because fragment
 
 ## Debugging
 
-Because TileGrad lowers to tinygrad UOps, tinygrad debugging tools work normally:
+TileGrad exposes the IR stages it owns:
+
+```python
+from tilegrad import KernelBuilder
+from tilegrad.debug import inspect_kernel
+
+k = KernelBuilder("copy", ("out", "inp"))
+out = k.buffer("out", shape=(4,), dtype="float32")
+inp = k.buffer("inp", shape=(4,), dtype="float32")
+k.copy(inp.tile(), out.tile())
+
+dbg = inspect_kernel(k)
+
+print(dbg.tile_ir)
+print(dbg.scalar_ir)
+print([stage.name for stage in dbg.stages])
+```
+
+Because TileGrad lowers to tinygrad UOps, tinygrad debugging tools remain the recommended path for backend codegen and runtime inspection:
 
 ```bash
 DEBUG=6 python3 examples/builder_canonical_tiled_gemm.py

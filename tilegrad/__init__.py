@@ -1,4 +1,5 @@
 from tilegrad.builder import KernelBuilder
+from tilegrad.debug import DebugArtifact, IRStage, inspect_kernel, ir_stages, lowered_uops, scalar_ir, tile_ir, uops_text
 from tilegrad.ir import Add, And, Eq, FloorDiv, Ge, Gt, Index2D, Le, LoadIf, Lt, Mod, Mul, Ne, Not, Or, SetIf, Sub, TileCopy, Var, add, and_, eq, floordiv, ge, gt, idx2, le, lt, mod, mul, ne, not_, or_, sub, var
 from tilegrad.lowerer import lower_kernel
 from tilegrad.runtime import run

@@ -21,7 +21,9 @@ TileGrad is already a useful proof-of-concept:
 - It has a hardened `TileView` MVP: buffers carry `dtype`, `scope`, and `stride` metadata, and `copy(...)` accepts tile views with shape, bounds, mask, and destination-guard coverage.
 - It has a first tile-level IR node: `TileCopy` preserves copy intent in `k.build()` and expands through scalar fallback before tinygrad UOp lowering.
 
-The main gap is no longer preserving copy intent. The next step is to add public debug/inspect helpers before adding layout/coalescing/vectorized copy policies.
+The main gap is no longer preserving copy intent. The next step is to add a thin TileGrad-owned debug artifact and named IR stage inspection before adding layout/coalescing/vectorized copy policies.
+
+This should complement, not replace, tinygrad `DEBUG` and `VIZ`. TileGrad should expose the boundaries it owns: unexpanded TileGrad IR, named TileGrad transform stages, scalar fallback IR, and lowered tinygrad UOps. Backend source/codegen inspection should remain tinygrad-owned unless a stable no-compile source path is available.
 
 ## Status Snapshot
 
@@ -46,8 +48,8 @@ Completed:
 
 Partially complete:
 
-- Phase 1 core stability is mostly complete, but public debug/render helpers and a dedicated tinygrad compatibility adapter are still pending.
-- Phase 3 Tile IR has `TileCopy` with scalar fallback and validation, but public debug helpers still need hardening.
+- Phase 1 core stability is mostly complete, but public stage/debug artifacts and a dedicated tinygrad compatibility adapter are still pending.
+- Phase 3 Tile IR has `TileCopy` with scalar fallback and validation, but public stage inspection still needs hardening.
 
 Not started:
 
@@ -65,6 +67,54 @@ Not started:
 - Keep scalar fallback paths before optimized lowering.
 - Make every layer inspectable.
 - Let users escape to lower-level IR/UOps when needed.
+
+## Debug/Inspect Direction
+
+TileGrad debug tooling should follow a small artifact/stage model similar in spirit to TileLang's exposed lower artifacts and pass inspection tools, but scaled to TileGrad's simpler compiler path.
+
+Target API shape:
+
+```python
+from tilegrad.debug import inspect_kernel, ir_stages
+
+dbg = inspect_kernel(k, out_uop, inp_uop)
+
+print(dbg.tile_ir)
+print(dbg.scalar_ir)
+print(dbg.uops_text())
+```
+
+Core objects:
+
+```python
+@dataclass(frozen=True)
+class IRStage:
+  name: str
+  kernel: Kernel
+
+@dataclass(frozen=True)
+class DebugArtifact:
+  tile_ir: Kernel
+  stages: tuple[IRStage, ...]
+  scalar_ir: Kernel
+  uops: UOp | None = None
+```
+
+Initial named stages:
+
+- `tile_ir`: the unexpanded `KernelBuilder.build()` result, preserving `TileCopy`.
+- `expand_tile_copies`: scalar fallback for tile copy intent.
+- `expand_fragments`: scalar fallback for fragment operations.
+- `unroll_register_tiles`: register-index unrolling before tinygrad lowering.
+- `scalar_ir`: the final TileGrad scalar IR accepted by `lower_kernel(...)`.
+- `lowered_uops`: the tinygrad `Ops.SINK` produced from scalar IR when placeholder UOps are supplied.
+
+Non-goals for this milestone:
+
+- Do not build a replacement for tinygrad `DEBUG` or `VIZ`.
+- Do not promise generated backend source as a stable TileGrad API.
+- Do not add a full pass manager before there are enough TileGrad transforms to justify one.
+- Do not add runtime debug printing until there is a concrete TileGrad-side need distinct from normal tensor/output checks.
 
 ## Non-Goals For Now
 
@@ -112,14 +162,15 @@ Work:
 - Done: keep `opts_to_apply=()` as the default for TileGrad-lowered kernels.
 - Done: add explicit `dtype`, `scope`, `shape`, and `stride` metadata to `BufferRef`.
 - Done: fix explicit 2D stride handling so `BufferRef` tuple indexing and TileView/TileCopy lowering consistently honor `BufferRef.stride` instead of silently falling back to compact shape-derived strides.
-- Add public debug helpers for TileGrad IR, expanded IR, lowered UOps, and generated source.
+- Add public debug artifacts for unexpanded TileGrad IR, named TileGrad-owned IR stages, scalar fallback IR, and lowered tinygrad UOps.
 - Add a small tinygrad UOp adapter only for APIs that have already shown churn: scalar dtype, index/load/store, placeholders, ranges, and `KernelInfo`.
 
 Success criteria:
 
 - Existing test suite passes.
 - Raw UOp examples run.
-- Debug helpers work on copy, shared copy, and canonical tiled GEMM.
+- Debug artifacts work on copy, shared copy, TileView copy, and canonical tiled GEMM.
+- tinygrad `DEBUG` and `VIZ` remain the recommended path for generated source/codegen/runtime inspection.
 - Compatibility code is small and does not hide normal tinygrad UOp usage.
 
 ## Phase 2: TileView MVP
@@ -169,7 +220,7 @@ Success criteria:
 
 Goal: give tile operations stable IR nodes while preserving correctness through scalar fallback.
 
-Status: started. `TileCopy` exists, validates before scalar fallback, and runs through scalar fallback; public debug hardening is next.
+Status: started. `TileCopy` exists, validates before scalar fallback, and runs through scalar fallback; public stage inspection is next.
 
 Add tile-level IR incrementally:
 
@@ -202,7 +253,8 @@ Success criteria:
 - Done: direct `TileCopy` IR rejects unsupported semantics, including nonzero fill and non-`None` layouts, until those policies have defined lowering behavior.
 - Done: `TileCopy` scalar fallback passes existing copy and GEMM tests.
 - Done: Tile IR can be printed independently from scalar-expanded IR through the TileCopy inspection example.
-- Pending: public helpers expose unexpanded TileGrad IR, expanded scalar IR, lowered UOps, and generated source.
+- Pending: public debug artifacts expose unexpanded TileGrad IR, named TileGrad transform stages, expanded scalar IR, and lowered UOps.
+- Pending: docs explain that generated backend source belongs to tinygrad debug/codegen paths for now.
 
 ## Phase 4: Layout And Memory Movement
 
@@ -300,7 +352,7 @@ Success criteria:
 
 ## Priority Order
 
-1. Add public debug/inspect helpers for TileGrad IR, expanded scalar IR, lowered UOps, and generated source where stable.
+1. Add public debug artifacts and named IR stage inspection for TileGrad-owned lowering boundaries.
 2. Add a small tinygrad compatibility adapter.
 3. Add layout and memory movement policy hooks for `TileCopy`.
 4. Add copy microbenchmarks.
@@ -311,10 +363,13 @@ Success criteria:
 
 ## Immediate Next Milestone
 
-Add public inspect/debug helpers:
+Add public debug artifacts and named IR stage inspection:
 
-- Add small public inspect helpers for unexpanded TileGrad IR and expanded scalar fallback IR.
-- Add helpers for lowered UOps and generated source where tinygrad exposes stable APIs.
+- Add `tilegrad.debug.inspect_kernel(...)` returning a `DebugArtifact`.
+- Add `tilegrad.debug.ir_stages(...)` returning named TileGrad-owned IR snapshots.
+- Add convenience wrappers only if they stay thin: `tile_ir(...)`, `scalar_ir(...)`, and `lowered_uops(...)`.
+- Add `DebugArtifact.uops_text()` using tinygrad's UOp text rendering.
+- Do not expose generated source as a stable TileGrad helper in this milestone; document tinygrad `DEBUG=6` and `VIZ=1` instead.
 - Keep `lower_kernel(...)` on the safe path: `TileCopy -> scalar fallback IR -> tinygrad UOps`.
 - Run the full test suite plus `examples/builder_tilecopy_inspect.py`, the TileView GEMM example, and representative raw UOp examples.
 
