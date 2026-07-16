@@ -1,7 +1,7 @@
 import unittest
 from tinygrad import Tensor
 from tilegrad.builder import KernelBuilder
-from tilegrad.ir import Add, Alloc, Arg, Barrier, FragmentAlloc, FragmentClear, FragmentGemm, FragmentStore, Index2D, Kernel, Load, LoadIf, Mul, Range, TileCopy, Set, SetIf, Store, Var, And, Lt, StoreIf
+from tilegrad.ir import *
 from tilegrad.lowerer import lower_kernel
 from tilegrad.tiles import expand_tile_copies
 
@@ -640,6 +640,39 @@ class TestBuilder(unittest.TestCase):
       )),
     )
   
+  def test_buffer_ref_2d_indexing_uses_explicit_stride(self):
+    k = KernelBuilder("copy2d_stride", ("out", "inp"))
+    out = k.buffer("out", shape=(2,3), stride=5)
+    inp = k.buffer("inp", shape=(2,3), stride=5)
+    with k.range("i", 2) as i:
+      with k.range("j", 3) as j:
+        out[i, j] = inp[i, j]
+    self.assertEqual(k.build().body, (
+      Range("i", 2, (
+        Range("j", 3, (
+          Set("out", Index2D(Var("i"), Var("j"), 5), Load("inp", Index2D(Var("i"), Var("j"), 5))),
+        )),
+      )),
+    ))
+  
+  def test_copy_tile_view_uses_explicit_buffer_stride(self):
+    k = KernelBuilder("tile_copy_stride", ("out", "inp"))
+    out = k.buffer("out", shape=(2,3), dtype="float32", stride=5)
+    inp = k.buffer("inp", shape=(2,3), dtype="float32", stride=7)
+    k.copy(inp.tile(), out.tile())
+    self.assertEqual(k.build().body, (
+      TileCopy(
+        src="inp",
+        dst="out",
+        shape=(2,3),
+        src_origin=(0,0),
+        dst_origin=(0,0),
+        src_stride=7,
+        dst_stride=5,
+        index_names=("_c0_i0", "_c0_i1"),
+      ),
+    ))
+
   def test_buffer_ref_3d_indexing(self):
     k = KernelBuilder("copy3d", ("out", "inp"))
     out = k.buffer("out", shape=(2, 3, 4))

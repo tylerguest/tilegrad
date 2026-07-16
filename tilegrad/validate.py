@@ -1,4 +1,4 @@
-from tilegrad.ir import Alloc, Barrier, BinaryExpr, Const, FragmentAlloc, FragmentClear, FragmentGemm, FragmentStore, Kernel, Load, LoadIf, Not, Range, Store, StoreIf, Index2D, Set, SetIf, Var
+from tilegrad.ir import Alloc, Barrier, BinaryExpr, Const, FragmentAlloc, FragmentClear, FragmentGemm, FragmentStore, Kernel, Load, LoadIf, Not, Range, Store, StoreIf, Index2D, Set, SetIf, TileCopy, Var
 
 VALID_RANGE_AXES = ("loop", "reduce", "global", "local", "unroll")
 
@@ -145,6 +145,113 @@ def validate_fragment_stmt(stmt, buffers, indices, saw_effect, register_buffers,
     raise TypeError(f"unsupported fragment statement: {type(stmt).__name__}")
   saw_effect[0] = True
 
+def _validate_tile_copy_tuple(value, name):
+  if not isinstance(value, tuple): raise TypeError(f"tile copy {name} must be a tuple")
+
+def _validate_tile_copy_origin(origin, name, rank, stride, allow_1d_strided_src):
+  _validate_tile_copy_tuple(origin, name)
+  valid_lens = {rank}
+  if allow_1d_strided_src and rank == 1 and stride is not None: valid_lens.add(2)
+  if len(origin) not in valid_lens: raise ValueError(f"tile copy {name} rank {len(origin)} does not match shape rank {rank}")
+
+def _validate_tile_copy_bounds(bounds, name, rank):
+  if bounds is None: return
+  _validate_tile_copy_tuple(bounds, name)
+  if len(bounds) != rank: raise ValueError(f"tile copy {name} rank {len(bounds)} does not match shape rank {rank}")
+
+def _validate_tile_copy_stride(stride, name, buffers, indices, register_buffers, fragments):
+  if stride is None: return
+  if isinstance(stride, float): raise TypeError(f"tile copy {name} must be an integer expression")
+  if isinstance(stride, int) and stride <= 0: raise ValueError(f"tile copy {name} must be positive: {stride}")
+  validate_expr(stride, buffers, indices, register_buffers, fragments)
+
+def validate_tile_copy(stmt, buffers, indices, saw_effect, register_buffers=None, fragments=None):
+  if stmt.src not in buffers: raise ValueError(f"unknown buffer: {stmt.src}")
+  if stmt.dst not in buffers: raise ValueError(f"unknown buffer: {stmt.dst}")
+  if fragments is not None and stmt.src in fragments: raise ValueError(f"fragment buffer '{stmt.src}' cannot be used with TileCopy")
+  if fragments is not None and stmt.dst in fragments: raise ValueError(f"fragment buffer '{stmt.dst}' cannot be used with TileCopy")
+  if not isinstance(stmt.shape, tuple): raise TypeError("tile copy shape must be a tuple")
+  
+  if len(stmt.shape) == 0: raise ValueError("tile copy shape must not be empty")
+  if len(stmt.shape) > 3: raise NotImplementedError(f"tile copy does not support {len(stmt.shape)}D")
+  for dim in stmt.shape: validate_shape(dim, buffers)
+  
+  rank = len(stmt.shape)
+  names = stmt.index_names or tuple(f"_tc_i{i}" for i in range(rank))
+  
+  if not isinstance(names, tuple): raise TypeError("tile copy index_names must be a tuple")
+  if len(names) != rank: raise ValueError(f"tile copy index name count {len(names)} does not match shape rank {rank}")
+  
+  seen_names = set()
+  for name in names:
+    if not isinstance(name, str): raise TypeError("tile copy index names must be strings")
+    if name in indices: raise ValueError(f"duplicate range variable: {name}")
+    if name in seen_names: raise ValueError(f"duplicate range variable: {name}")
+    seen_names.add(name)
+  
+  _validate_tile_copy_origin(stmt.src_origin, "src_origin", rank, stmt.src_stride, allow_1d_strided_src=True)
+  _validate_tile_copy_origin(stmt.dst_origin, "dst_origin", rank, stmt.dst_stride, allow_1d_strided_src=False)
+  for value in stmt.src_origin: validate_expr(value, buffers, indices, register_buffers, fragments)
+  for value in stmt.dst_origin: validate_expr(value, buffers, indices, register_buffers, fragments)
+  
+  _validate_tile_copy_bounds(stmt.src_bounds, "src_bounds", rank)
+  _validate_tile_copy_bounds(stmt.dst_bounds, "dst_bounds", rank)
+  if stmt.src_bounds is not None:
+    for value in stmt.src_bounds: validate_expr(value, buffers, indices, register_buffers, fragments)
+  if stmt.dst_bounds is not None:
+    for value in stmt.dst_bounds: validate_expr(value, buffers, indices, register_buffers, fragments)
+  
+  if rank == 2 and stmt.src_stride is None: raise ValueError("tile copy src_stride required for 2D copy")
+  if rank == 2 and stmt.dst_stride is None: raise ValueError("tile copy dst_stride required for 2D copy")
+  _validate_tile_copy_stride(stmt.src_stride, "src_stride", buffers, indices, register_buffers, fragments)
+  _validate_tile_copy_stride(stmt.dst_stride, "dst_stride", buffers, indices, register_buffers, fragments)
+
+  tile_indices = indices | set(names)
+  if stmt.src_mask is not None: validate_expr(stmt.src_mask, buffers, tile_indices, register_buffers, fragments)
+  if stmt.dst_mask is not None: validate_expr(stmt.dst_mask, buffers, tile_indices, register_buffers, fragments)
+  if stmt.guard is not None: validate_expr(stmt.guard, buffers, tile_indices, register_buffers, fragments)
+
+  if stmt.fill not in (None, 0): raise NotImplementedError("tile copy only supports fill=0")
+  if stmt.src_layout is not None: raise NotImplementedError("tile copy layouts are not supported yet")
+  if stmt.dst_layout is not None: raise NotImplementedError("tile copy layouts are not supported yet")
+  saw_effect[0] = True
+
+def _validate_tile_copies_in_range(op, buffers, indices, register_buffers, fragments):
+  validate_shape(op.extent, buffers)
+  if op.name in indices: raise ValueError(f"duplicate range variable: {op.name}")
+  if op.axis not in VALID_RANGE_AXES: raise ValueError(f"unknown range axis: {op.axis}")
+  indices = indices | {op.name}
+  for stmt in op.body:
+    if isinstance(stmt, Range):
+      _validate_tile_copies_in_range(stmt, buffers, indices, register_buffers, fragments)
+    elif isinstance(stmt, TileCopy):
+      validate_tile_copy(stmt, buffers, indices, [False], register_buffers, fragments)
+
+def validate_tile_copies(kernel):
+  if not isinstance(kernel, Kernel): raise TypeError(f"expected Kernel, got {type(kernel).__name__}")
+  buffers = set()
+  register_buffers = set()
+  fragments = {}
+  for arg in kernel.args:
+    if arg.name in buffers: raise ValueError(f"duplicate arg name: {arg.name}")
+    buffers.add(arg.name)
+  for op in kernel.body:
+    if isinstance(op, Alloc):
+      if op.name in buffers: raise ValueError(f"duplicate buffer name: {op.name}")
+      if op.space not in ("shared", "register"): raise NotImplementedError(op.space)
+      validate_shape(op.shape, buffers)
+      buffers.add(op.name)
+      if op.space == "register": register_buffers.add(op.name)
+    elif isinstance(op, FragmentAlloc):
+      if op.name in buffers: raise ValueError(f"duplicate buffer name: {op.name}")
+      validate_fragment_shape(op.shape)
+      buffers.add(op.name)
+      fragments[op.name] = op
+    elif isinstance(op, Range):
+      _validate_tile_copies_in_range(op, buffers, set(), register_buffers, fragments)
+    elif isinstance(op, TileCopy):
+      validate_tile_copy(op, buffers, set(), [False], register_buffers, fragments)
+
 def validate_range(op, buffers, indices, saw_effect, register_buffers=None, fragments=None):
   validate_shape(op.extent, buffers)
   if op.name in indices: raise ValueError(f"duplicate range variable: {op.name}")
@@ -158,9 +265,12 @@ def validate_range(op, buffers, indices, saw_effect, register_buffers=None, frag
     elif isinstance(stmt, (Store, Set)):
       validate_store(stmt, buffers, indices, register_buffers, fragments)
       saw_effect[0] = True
-    elif isinstance(stmt, Range): validate_range(stmt, buffers, indices, saw_effect, register_buffers, fragments)
+    elif isinstance(stmt, Range): 
+      validate_range(stmt, buffers, indices, saw_effect, register_buffers, fragments)
     elif isinstance(stmt, (FragmentClear, FragmentGemm, FragmentStore)):
       validate_fragment_stmt(stmt, buffers, indices, saw_effect, register_buffers, fragments)
+    elif isinstance(stmt, TileCopy):
+      validate_tile_copy(stmt, buffers, indices, saw_effect, register_buffers, fragments)
     elif isinstance(stmt, Barrier):
       if not saw_effect[0]: raise ValueError("barrier requires a previous effect")
       saw_effect[0] = True
@@ -201,9 +311,12 @@ def validate_kernel(kernel):
     elif isinstance(op, Store):
       validate_store(op, buffers, set(), register_buffers, fragments)
       saw_effect[0] = True
-    elif isinstance(op, Range): validate_range(op, buffers, set(), saw_effect, register_buffers, fragments)
+    elif isinstance(op, Range):
+      validate_range(op, buffers, set(), saw_effect, register_buffers, fragments)
     elif isinstance(op, (FragmentClear, FragmentGemm, FragmentStore)):
       validate_fragment_stmt(op, buffers, set(), saw_effect, register_buffers, fragments)
+    elif isinstance(op, TileCopy):
+      validate_tile_copy(op, buffers, set(), saw_effect, register_buffers, fragments)
     elif isinstance(op, Barrier):
       if not saw_effect[0]: raise ValueError("barrier requires a previous effect")
       saw_effect[0] = True

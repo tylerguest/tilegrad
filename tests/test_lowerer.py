@@ -2,7 +2,7 @@ import unittest
 from tinygrad import Tensor
 from tinygrad.dtype import AddrSpace, dtypes
 from tinygrad.uop.ops import AxisType, Ops, UOp
-from tilegrad.ir import Add, Alloc, Arg, Barrier, FragmentAlloc, FragmentClear, FragmentGemm, FragmentStore, FloorDiv, Kernel, Load, Lt, Mod, Mul, Range, Set, SetIf, Store, Index2D, Sub, Var
+from tilegrad.ir import *
 from tilegrad.lowerer import lower_kernel
 
 
@@ -724,6 +724,16 @@ class TestLowerer(unittest.TestCase):
     ranges = [u for u in sink.toposort() if u.op is Ops.RANGE]
     axis_types = [r.arg[1] for r in ranges]
     self.assertIn(AxisType.UNROLL, axis_types)
+  
+  def test_lowerer_rejects_unexpected_tile_copy_layout(self):
+    ir = Kernel(
+      "test_reject_tile_copy_layout",
+      (Arg("out"), Arg("inp")),
+      (TileCopy("inp", "out", (4,), (0,), (0,), src_layout="coalesced"),),
+    )
+    out = UOp.placeholder((4,), dtypes.float, slot=-1)
+    inp = UOp.placeholder((4,), dtypes.float, slot=0)
+    with self.assertRaisesRegex(NotImplementedError, "layouts are not supported"): lower_kernel(ir, out, inp)
 
 if __name__ == "__main__":
   unittest.main()

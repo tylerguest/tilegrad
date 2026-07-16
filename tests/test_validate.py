@@ -1,5 +1,5 @@
 import unittest
-from tilegrad.ir import Add, Arg, Alloc, Barrier, Const, FragmentAlloc, FragmentClear, FragmentGemm, FragmentStore, Index2D, Kernel, Load, LoadIf, Mul, Range, Set, SetIf, Store, Var, lt, And, Lt, StoreIf
+from tilegrad.ir import *
 from tilegrad.validate import validate_kernel
 
 class TestValidate(unittest.TestCase):
@@ -407,6 +407,102 @@ class TestValidate(unittest.TestCase):
     )
     with self.assertRaisesRegex(ValueError, "invalid shape dimension"):
       validate_kernel(kernel)
+  
+  def test_validate_accepts_tile_copy(self):
+    kernel = Kernel(
+      "tile_copy_ok",
+      (Arg("out"), Arg("inp")),
+      (TileCopy("inp", "out", (2,3), (0,0), (0,0), src_stride=3, dst_stride=3, index_names=("i", "j")),),
+    )
+    validate_kernel(kernel)
+  
+  def test_tile_copy_unknown_src_fails(self):
+    kernel = Kernel(
+      "tile_copy_bad_src",
+      (Arg("out"),),
+      (TileCopy("missing", "out", (2,3), (0,0), (0,0), src_stride=3, dst_stride=3),),
+    )
+    with self.assertRaisesRegex(ValueError, "unknown buffer: missing"): validate_kernel(kernel)
+  
+  def test_tile_copy_unknown_dst_fails(self):
+    kernel = Kernel(
+      "tile_copy_bad_dst",
+      (Arg("inp"),),
+      (TileCopy("inp", "missing", (2,3), (0,0), (0,0), src_stride=3, dst_stride=3),),
+    )
+    with self.assertRaisesRegex(ValueError, "unknown buffer: missing"): validate_kernel(kernel)
+  
+  def test_tile_copy_empty_shape_fails(self):
+    kernel = Kernel(
+      "tile_copy_empty",
+      (Arg("out"), Arg("inp")), 
+      (TileCopy("inp", "out", (), (), ()),)
+    )
+    with self.assertRaisesRegex(ValueError, "tile copy shape must not be empty"): validate_kernel(kernel)
+
+  def test_tile_copy_bad_origin_rank_fails(self):
+    kernel = Kernel(
+      "tile_copy_bad_origin",
+      (Arg("out"), Arg("inp")),
+      (TileCopy("inp", "out", (2,3), (0,), (0,0), src_stride=3, dst_stride=3),),
+    )
+    with self.assertRaisesRegex(ValueError, "src_origin rank"): validate_kernel(kernel)
+  
+  def test_tile_copy_bad_bounds_rank_fails(self):
+    kernel = Kernel(
+      "tile_copy_bad_names",
+      (Arg("out"), Arg("inp")),
+      (TileCopy("inp", "out", (2,3), (0,0), (0,0), src_stride=3, dst_stride=3, src_bounds=(2,)),),
+    )
+    with self.assertRaisesRegex(ValueError, "src_bounds rank"): validate_kernel(kernel)
+  
+  def test_tile_copy_bad_index_name_count_fails(self):
+    kernel = Kernel(
+      "tile_copy_bad_names",
+      (Arg("out"), Arg("inp")),
+      (TileCopy("inp", "out", (2,3), (0,0), (0,0), src_stride=3, dst_stride=3, index_names=("i",)),),
+    )
+    with self.assertRaisesRegex(ValueError, "index name count"): validate_kernel(kernel)
+  
+  def test_tile_copy_unknown_mask_var_fails(self):
+    kernel = Kernel(
+      "tile_copy_bad_mask",
+      (Arg("out"), Arg("inp")),
+      (TileCopy("inp", "out", (4,), (0,), (0,), src_mask=Lt(Var("missing"), 3), index_names=("i",)),),
+    )
+    with self.assertRaisesRegex(ValueError, "unknown index variable: missing"): validate_kernel(kernel)
+  
+  def test_tile_copy_mask_can_reference_copy_index(self):
+    kernel = Kernel(
+      "tile_copy_mask_index",
+      (Arg("out"), Arg("inp")),
+      (TileCopy("inp", "out", (4,), (0,), (0,), src_mask=Lt(Var("i"), 3), index_names=("i",)),),
+    )
+    validate_kernel(kernel)
+  
+  def test_tile_copy_unknown_guard_var_fails(self):
+    kernel = Kernel(
+      "tile_copy_bad_guard",
+      (Arg("out"), Arg("inp")),
+      (TileCopy("inp", "out", (4,), (0,), (0,), guard=Lt(Var("missing"), 3), index_names=("i",)),),
+    )
+    with self.assertRaisesRegex(ValueError, "unknown index variable: missing"): validate_kernel(kernel)
+  
+  def test_tile_copy_nonzero_fill_fails(self):
+    kernel = Kernel(
+      "tile_copy_bad_fill",
+      (Arg("out"), Arg("inp")),
+      (TileCopy("inp", "out", (4,), (0,), (0,), fill=1),)
+    )
+    with self.assertRaisesRegex(NotImplementedError, "fill=0"): validate_kernel(kernel)
+
+  def test_tile_copy_layout_fails(self):
+    kernel = Kernel(
+      "tile_copy_bad_layout",
+      (Arg("out"), Arg("inp")),
+      (TileCopy("inp", "out", (4,), (0,), (0,), src_layout="coalesced"),)
+    )
+    with self.assertRaisesRegex(NotImplementedError, "layouts are not supported"): validate_kernel(kernel)
 
 if __name__ == "__main__":
   unittest.main()

@@ -23,6 +23,8 @@ class BufferRef:
   def _index(self, index):
     if not isinstance(index, tuple): return index
     if self.shape is None: raise ValueError("tuple indexing requires shape")
+    if len(index) != len(self.shape): raise ValueError(f"{len(index)}D index does not match {len(self.shape)}D shape")
+    if len(index) == 2 and self.stride is not None: return Index2D(index[0], index[1], self.stride)
     return _flatten_nd_index(index, self.shape)
   
   def tile(self, origin=None, shape=None, stride=None, bounds=None, mask=None, layout=None):
@@ -123,8 +125,8 @@ def _validate_tile_copy_shape(tile, shape, role):
 def _copy_stride(buffer, stride, shape, name):
   if len(shape) != 2: return stride
   if stride is not None: return stride
-  if isinstance(buffer, BufferRef) and buffer.shape is not None and len(buffer.shape) == 2:
-    return buffer.shape[1]
+  if isinstance(buffer, BufferRef) and buffer.stride is not None: return buffer.stride
+  if isinstance(buffer, BufferRef) and buffer.shape is not None and len(buffer.shape) == 2: return buffer.shape[1]
   if name == "dst": return shape[1]
   raise ValueError(f"{name}_stride required for 2D copy")
 

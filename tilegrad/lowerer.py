@@ -3,7 +3,7 @@ from tinygrad.uop.ops import AxisType, KernelInfo, UOp
 from tilegrad.fragments import expand_fragments
 from tilegrad.ir import Add, Alloc, And, Barrier, BinaryExpr, Const, Eq, FloorDiv, Ge, Gt, Index2D, Le, Load, LoadIf, Lt, Mod, Mul, Ne, Not, Or, Range, Set, SetIf, Store, StoreIf, Sub, Var
 from tilegrad.unroll import unroll_register_tiles
-from tilegrad.validate import validate_kernel
+from tilegrad.validate import validate_kernel, validate_tile_copies
 from tilegrad.tiles import expand_tile_copies
 
 AXIS_TYPES = {
@@ -309,6 +309,7 @@ def _group_independent_sink_effects(sink_effects):
   return out
 
 def lower_kernel(kernel, *args: UOp) -> UOp:
+  validate_tile_copies(kernel)
   kernel = expand_tile_copies(kernel)
   kernel = expand_fragments(kernel)
   kernel = unroll_register_tiles(kernel)

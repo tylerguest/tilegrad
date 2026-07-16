@@ -615,6 +615,21 @@ class TestRuntime(unittest.TestCase):
     out_t = Tensor.empty(4)
     self.assertEqual(run(k, out_t, inp_t).tolist(), [6.0, 7.0, 10.0, 11.0])
   
+  def test_run_tile_view_copy_honors_explicit_strides(self):
+    k = KernelBuilder("tile_view_copy_explicit_stride", ("out", "inp"))
+    out = k.buffer("out", shape=(2,3), dtype="float32", stride=5)
+    inp = k.buffer("inp", shape=(2,3), dtype="float32", stride=7)
+    k.copy(inp.tile(), out.tile())
+    inp_t = Tensor([
+      1.0, 2.0, 3.0, 99.0, 99.0, 99.0, 99.0,
+      4.0, 5.0, 6.0, 99.0, 99.0, 99.0, 99.0,
+    ])
+    out_t = Tensor([0.0] * 10)
+    self.assertEqual(run(k, out_t, inp_t).tolist(), [
+      1.0, 2.0, 3.0, 0.0, 0.0,
+      4.0, 5.0, 6.0, 0.0, 0.0,
+    ])
+  
   def test_run_tile_view_copy_src_bounds_zero_fills(self):
     k = KernelBuilder("tile_view_copy_src_bounds_zero_fill", ("out", "inp"))
     out = k.buffer("out", shape=(2,2), dtype="float32")
