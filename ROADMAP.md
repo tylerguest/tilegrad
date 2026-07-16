@@ -48,8 +48,9 @@ Completed:
 
 Partially complete:
 
-- Phase 1 core stability is mostly complete, but public stage/debug artifacts and a dedicated tinygrad compatibility adapter are still pending.
-- Phase 3 Tile IR has `TileCopy` with scalar fallback and validation, but public stage inspection still needs hardening.
+- Phase 1 core stability is mostly complete, but a dedicated tinygrad compatibility adapter is still pending.
+- Phase 3 Tile IR has `TileCopy` with scalar fallback, validation, and public stage inspection.
+- Debug artifacts, stage inspection, and copy policy metadata (`coalesced_width`) are implemented.
 
 Not started:
 
@@ -162,8 +163,8 @@ Work:
 - Done: keep `opts_to_apply=()` as the default for TileGrad-lowered kernels.
 - Done: add explicit `dtype`, `scope`, `shape`, and `stride` metadata to `BufferRef`.
 - Done: fix explicit 2D stride handling so `BufferRef` tuple indexing and TileView/TileCopy lowering consistently honor `BufferRef.stride` instead of silently falling back to compact shape-derived strides.
-- Add public debug artifacts for unexpanded TileGrad IR, named TileGrad-owned IR stages, scalar fallback IR, and lowered tinygrad UOps.
-- Add a small tinygrad UOp adapter only for APIs that have already shown churn: scalar dtype, index/load/store, placeholders, ranges, and `KernelInfo`.
+- Done: add public debug artifacts for unexpanded TileGrad IR, named TileGrad-owned IR stages, scalar fallback IR, and lowered tinygrad UOps.
+- Done: add a small tinygrad UOp adapter only for APIs that have already shown churn: scalar dtype, index/load/store, placeholders, ranges, and `KernelInfo`.
 
 Success criteria:
 
@@ -253,8 +254,9 @@ Success criteria:
 - Done: direct `TileCopy` IR rejects unsupported semantics, including nonzero fill and non-`None` layouts, until those policies have defined lowering behavior.
 - Done: `TileCopy` scalar fallback passes existing copy and GEMM tests.
 - Done: Tile IR can be printed independently from scalar-expanded IR through the TileCopy inspection example.
-- Pending: public debug artifacts expose unexpanded TileGrad IR, named TileGrad transform stages, expanded scalar IR, and lowered UOps.
-- Pending: docs explain that generated backend source belongs to tinygrad debug/codegen paths for now.
+- Done: public debug artifacts expose unexpanded TileGrad IR, named TileGrad transform stages, expanded scalar IR, and lowered UOps.
+- Done: docs explain that generated backend source belongs to tinygrad debug/codegen paths for now.
+- Done: `TileCopy.coalesced_width` metadata with validation and debug preservation.
 
 ## Phase 4: Layout And Memory Movement
 
@@ -352,25 +354,24 @@ Success criteria:
 
 ## Priority Order
 
-1. Add public debug artifacts and named IR stage inspection for TileGrad-owned lowering boundaries.
-2. Add a small tinygrad compatibility adapter.
-3. Add layout and memory movement policy hooks for `TileCopy`.
-4. Add copy microbenchmarks.
-5. Add `TileMMA` contract with scalar fallback.
-6. Add explicit `Ops.WMMA` lowering for one case.
-7. Add real pipelining.
-8. Add autotuning.
+1. ~~Add public debug artifacts and named IR stage inspection for TileGrad-owned lowering boundaries.~~
+2. ~~Add a small tinygrad compatibility adapter.~~
+3. Add copy policy metadata and classification hooks for `TileCopy`.
+4. Add layout and memory movement policy hooks for `TileCopy`.
+5. Add copy microbenchmarks.
+6. Add `TileMMA` contract with scalar fallback.
+7. Add explicit `Ops.WMMA` lowering for one case.
+8. Add real pipelining.
+9. Add autotuning.
 
 ## Immediate Next Milestone
 
-Add public debug artifacts and named IR stage inspection:
+Add copy policy metadata and classification hooks for `TileCopy`:
 
-- Add `tilegrad.debug.inspect_kernel(...)` returning a `DebugArtifact`.
-- Add `tilegrad.debug.ir_stages(...)` returning named TileGrad-owned IR snapshots.
-- Add convenience wrappers only if they stay thin: `tile_ir(...)`, `scalar_ir(...)`, and `lowered_uops(...)`.
-- Add `DebugArtifact.uops_text()` using tinygrad's UOp text rendering.
-- Do not expose generated source as a stable TileGrad helper in this milestone; document tinygrad `DEBUG=6` and `VIZ=1` instead.
-- Keep `lower_kernel(...)` on the safe path: `TileCopy -> scalar fallback IR -> tinygrad UOps`.
-- Run the full test suite plus `examples/builder_tilecopy_inspect.py`, the TileView GEMM example, and representative raw UOp examples.
+- Extend `TileCopy.coalesced_width` metadata into a copy policy classification pass.
+- Classify copies as scalar, contiguous, coalesced-candidate, or vectorizable-candidate.
+- Expose classification reasons through `DebugArtifact`.
+- Keep scalar fallback as the correctness path.
+- Add vectorized copy lowering for unmasked contiguous copies only.
 
-After that, add layout/coalescing policy hooks to `TileCopy` before attempting vectorized copies, async copies, or WMMA.
+After that, add layout and memory movement policy hooks for `TileCopy` before attempting vectorized copies, async copies, or WMMA.

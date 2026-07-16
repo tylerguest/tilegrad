@@ -735,5 +735,16 @@ class TestLowerer(unittest.TestCase):
     inp = UOp.placeholder((4,), dtypes.float, slot=0)
     with self.assertRaisesRegex(NotImplementedError, "layouts are not supported"): lower_kernel(ir, out, inp)
 
+  def test_lowerer_accepts_tile_copy_coalesced_width(self):
+    ir = Kernel(
+      "test_tile_copy_coalesced_width",
+      (Arg("out"), Arg("inp")),
+      (TileCopy("inp", "out", (4,), (0,), (0,), coalesced_width=4),),
+    )
+    out = UOp.placeholder((4,), dtypes.float, slot=-1)
+    inp = UOp.placeholder((4,), dtypes.float, slot=0)
+    sink = lower_kernel(ir, out, inp)
+    self.assertIs(sink.op, Ops.SINK)
+
 if __name__ == "__main__":
   unittest.main()

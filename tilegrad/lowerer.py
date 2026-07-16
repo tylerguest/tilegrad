@@ -1,18 +1,11 @@
-from tinygrad.dtype import AddrSpace, Invalid, dtypes
-from tinygrad.uop.ops import AxisType, KernelInfo, UOp
+from tilegrad import tinygrad_compat as tg
 from tilegrad.fragments import expand_fragments
 from tilegrad.ir import Add, Alloc, And, Barrier, BinaryExpr, Const, Eq, FloorDiv, Ge, Gt, Index2D, Le, Load, LoadIf, Lt, Mod, Mul, Ne, Not, Or, Range, Set, SetIf, Store, StoreIf, Sub, Var
 from tilegrad.unroll import unroll_register_tiles
 from tilegrad.validate import validate_kernel, validate_tile_copies
 from tilegrad.tiles import expand_tile_copies
 
-AXIS_TYPES = {
-  "loop": AxisType.LOOP,
-  "reduce": AxisType.REDUCE,
-  "global": AxisType.GLOBAL,
-  "local": AxisType.LOCAL,
-  "unroll": AxisType.UNROLL,
-}
+AXIS_TYPES = tg.AXIS_TYPES
 
 def lower_shape(shape, env):
   if isinstance(shape, int): return shape
@@ -22,13 +15,9 @@ def lower_shape(shape, env):
     return env[name].shape[int(dim)]
   raise NotImplementedError(shape)
 
-def lower_dtype(dtype):
-  if not isinstance(dtype, str): return dtype
-  if not hasattr(dtypes, dtype): raise NotImplementedError(dtype)
-  return getattr(dtypes, dtype)
+def lower_dtype(dtype): return tg.dtype_from_name(dtype)
 
-def lower_index(idx):
-  return idx if isinstance(idx, UOp) else UOp.const(dtypes.weakint, idx)
+def lower_index(idx): return tg.index_const(idx)
 
 def lower_binary(expr, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode, op):
   lhs = lower_expr(expr.lhs, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode)
@@ -49,7 +38,7 @@ def _expr_load_buffers(expr):
   if isinstance(expr, Not): return _expr_load_buffers(expr.x)
   return set()
 
-def _after_deps(buf): return buf.src[1:] if isinstance(buf, UOp) and buf.op.name == "AFTER" else ()
+def _after_deps(buf): return buf.src[1:] if isinstance(buf, tg.UOp) and buf.op.name == "AFTER" else ()
 
 def lower_load(expr, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode):
   idx = lower_expr(expr.index, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode)
@@ -59,7 +48,7 @@ def lower_load(expr, env, indices, recurrence_buffer, recurrence_range, recurren
     buf = buf.after(recurrence_range)
   buf = buf.flatten()
   if value_mode: return buf[idx]
-  return buf.index(lower_index(idx)).load()
+  return tg.load_uop(buf, idx)
 
 def lower_load_if(expr, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode):
   cond = lower_expr(expr.cond, env, indices, recurrence_buffer, recurrence_range, recurrence_uop, value_mode)
@@ -71,11 +60,10 @@ def lower_load_if(expr, env, indices, recurrence_buffer, recurrence_range, recur
   buf = buf.flatten()
   if value_mode:
     val = buf[idx]
-    return cond.where(val, val.const_like(0)) if isinstance(cond, UOp) else val if cond else val.const_like(0)
-  idx = lower_index(idx)
-  safe_idx = cond.where(idx, idx.const_like(0)) if isinstance(cond, UOp) else idx if cond else idx.const_like(0)
-  val = buf.index(safe_idx).load()
-  return cond.where(val, val.const_like(0)) if isinstance(cond, UOp) else val if cond else val.const_like(0)
+    return cond.where(val, val.const_like(0)) if isinstance(cond, tg.UOp) else val if cond else val.const_like(0)
+  safe_idx = cond.where(idx, idx.const_like(0)) if isinstance(cond, tg.UOp) else idx if cond else idx.const_like(0)
+  val = tg.load_uop(buf, safe_idx)
+  return cond.where(val, val.const_like(0)) if isinstance(cond, tg.UOp) else val if cond else val.const_like(0)
 
 def lower_expr(expr, env, indices, recurrence_buffer=None, recurrence_range=None, recurrence_uop=None, value_mode=False):
   if isinstance(expr, (int, float)): return expr
@@ -120,7 +108,7 @@ def _needs_store_order(stmt, active_ranges, store_state):
   return prev_ranges != active_ranges or prev_key == _store_key(stmt)
 
 def _strip_after(buf):
-  while isinstance(buf, UOp) and buf.op.name == "AFTER": buf = buf.src[0]
+  while isinstance(buf, tg.UOp) and buf.op.name == "AFTER": buf = buf.src[0]
   return buf
 
 def lower_store_if(stmt, env, effects, sink_effects, buffer_effects, pending_shared, store_state, shared_read_effects, indices, active_ranges):
@@ -129,16 +117,16 @@ def lower_store_if(stmt, env, effects, sink_effects, buffer_effects, pending_sha
   val = lower_expr(stmt.value, env, indices)
   base = env[stmt.buffer]
   needs_order = _needs_store_order(stmt, active_ranges, store_state)
-  if base.addrspace is AddrSpace.LOCAL: 
+  if base.addrspace is tg.AddrSpace.LOCAL: 
     buf = base.flatten()
     for dep in shared_read_effects.get(stmt.buffer, ()): buf = buf.after(dep)
   else: buf = (base if needs_order else _strip_after(base)).flatten()
   if needs_order: buf = buf.after(buffer_effects[stmt.buffer])
-  if isinstance(val, UOp) and val.dtype != base.dtype.scalar(): val = val.cast(base.dtype.scalar())
+  if isinstance(val, tg.UOp) and val.dtype != tg.scalar_dtype(base.dtype): val = val.cast(tg.scalar_dtype(base.dtype))
   idx = lower_index(idx)
-  guarded_idx = cond.where(idx, idx.const_like(Invalid)) if isinstance(cond, UOp) else idx if cond else idx.const_like(Invalid)
+  guarded_idx = cond.where(idx, idx.const_like(tg.Invalid)) if isinstance(cond, tg.UOp) else idx if cond else idx.const_like(tg.Invalid)
   effect = buf.index(guarded_idx).store(val)
-  if base.addrspace is AddrSpace.LOCAL:
+  if base.addrspace is tg.AddrSpace.LOCAL:
     buffer_effects[stmt.buffer] = effect
     pending_shared.append((effect, active_ranges))
   else:
@@ -154,14 +142,14 @@ def lower_store(stmt, env, effects, sink_effects, buffer_effects, pending_shared
   val = lower_expr(stmt.value, env, indices)
   base = env[stmt.buffer]
   needs_order = _needs_store_order(stmt, active_ranges, store_state)
-  if base.addrspace is AddrSpace.LOCAL: 
+  if base.addrspace is tg.AddrSpace.LOCAL: 
     buf = base.flatten()
     for dep in shared_read_effects.get(stmt.buffer, ()): buf = buf.after(dep)
   else: buf = (base if needs_order else _strip_after(base)).flatten()
   if needs_order: buf = buf.after(buffer_effects[stmt.buffer])
-  if isinstance(val, UOp) and val.dtype != base.dtype.scalar(): val = val.cast(base.dtype.scalar())
+  if isinstance(val, tg.UOp) and val.dtype != tg.scalar_dtype(base.dtype): val = val.cast(tg.scalar_dtype(base.dtype))
   effect = buf.index(lower_index(idx)).store(val)
-  if base.addrspace is AddrSpace.LOCAL:
+  if base.addrspace is tg.AddrSpace.LOCAL:
     buffer_effects[stmt.buffer] = effect
     pending_shared.append((effect, active_ranges))
   else:
@@ -176,7 +164,7 @@ def lower_set(stmt, env, updated_buffers, local_updated, shared_read_effects, in
   idx = lower_expr(stmt.index, env, indices)
   recurrence_range = active_ranges[-1] if axis == "reduce" and active_ranges else None
   buf = env[stmt.buffer]
-  is_register = buf.addrspace is AddrSpace.REG
+  is_register = buf.addrspace is tg.AddrSpace.REG
   recurrence_uop = None
   register_end_ranges = ()
   if is_register:
@@ -197,7 +185,7 @@ def lower_set(stmt, env, updated_buffers, local_updated, shared_read_effects, in
       cond, env, indices, recurrence_buffer=stmt.buffer,
       recurrence_range=recurrence_range, recurrence_uop=recurrence_uop, value_mode=True,
     )
-    val = cond_uop.where(val, target) if isinstance(cond_uop, UOp) else val if cond_uop else target
+    val = cond_uop.where(val, target) if isinstance(cond_uop, tg.UOp) else val if cond_uop else target
   if axis == "reduce": ends = _dedup_ranges(recurrence_range, *register_end_ranges)
   elif cond is not None: ends = register_end_ranges
   else: ends = ()
@@ -206,9 +194,9 @@ def lower_set(stmt, env, updated_buffers, local_updated, shared_read_effects, in
     deps = _after_deps(next_buf)
     if deps:
       for name in _expr_load_buffers(stmt.value):
-        if name in env and env[name].addrspace is AddrSpace.LOCAL:
+        if name in env and env[name].addrspace is tg.AddrSpace.LOCAL:
           shared_read_effects[name] = _dedup_ranges(*shared_read_effects.get(name, ()), *deps)
-  if buf.addrspace is not AddrSpace.REG and isinstance(val, UOp):
+  if buf.addrspace is not tg.AddrSpace.REG and isinstance(val, tg.UOp):
     leaked_ranges = [r for r in val.ranges if r not in active_ranges]
     if leaked_ranges: next_buf = next_buf.end(*leaked_ranges)
   env[stmt.buffer] = next_buf
@@ -217,7 +205,7 @@ def lower_set(stmt, env, updated_buffers, local_updated, shared_read_effects, in
 
 def lower_range(op, env, effects, sink_effects, buffer_effects, pending_shared, store_state, shared_read_effects, updated_buffers, indices, range_slots, register_scopes, active_ranges=()):
   axis_type = AXIS_TYPES[op.axis]
-  i = UOp.range(lower_shape(op.extent, env), range_slots[0], axis_type)
+  i = tg.range_uop(lower_shape(op.extent, env), range_slots[0], axis_type)
   range_slots[0] += 1
   indices = indices | {op.name: i}
   active_ranges = active_ranges + (i,)
@@ -234,7 +222,7 @@ def lower_range(op, env, effects, sink_effects, buffer_effects, pending_shared, 
     for name in local_updated:
       if name not in env: continue
       buf = env[name]
-      if buf.addrspace is AddrSpace.REG:
+      if buf.addrspace is tg.AddrSpace.REG:
         scope = register_scopes.get(name, ())
         if scope and scope[-1] is i:
           if i in buf.ranges:
@@ -250,13 +238,13 @@ def lower_alloc(op, env, shared_slots, register_slots):
   if op.space == "shared":
     slot = shared_slots[0]
     shared_slots[0] += 1
-    addrspace = AddrSpace.LOCAL
+    addrspace = tg.AddrSpace.LOCAL
   elif op.space == "register":
     slot = register_slots[0]
     register_slots[0] += 1
-    addrspace = AddrSpace.REG
+    addrspace = tg.AddrSpace.REG
   else: raise NotImplementedError(op.space)
-  env[op.name] = UOp.placeholder((lower_shape(op.shape, env),), lower_dtype(op.dtype), slot=slot, addrspace=addrspace,)
+  env[op.name] = tg.placeholder((lower_shape(op.shape, env),), lower_dtype(op.dtype), slot, addrspace)
 
 def lower_barrier(env, effects, buffer_effects, pending_shared, active_ranges=()):
   if not effects and not pending_shared: raise ValueError("barrier requires a previous effect")
@@ -266,16 +254,16 @@ def lower_barrier(env, effects, buffer_effects, pending_shared, active_ranges=()
     for _, r in pending_shared:
       for x in r:
         if x not in rngs and x not in active_ranges: rngs.append(x)
-    grouped = UOp.group(*stores) if len(stores) > 1 else stores[0]
+    grouped = tg.group_uops(*stores) if len(stores) > 1 else stores[0]
     if rngs: grouped = grouped.end(*rngs)
     barrier_srcs = [grouped] + list(effects)
   else:
     barrier_srcs = list(effects)
-  bar = UOp.barrier(*barrier_srcs)
+  bar = tg.barrier_uops(*barrier_srcs)
   effects.clear()
   effects.append(bar)
   for name, buf in tuple(env.items()):
-    if buf.addrspace is AddrSpace.LOCAL:
+    if buf.addrspace is tg.AddrSpace.LOCAL:
       env[name] = buf.after(bar)
       buffer_effects[name] = bar
   pending_shared.clear()
@@ -299,7 +287,7 @@ def _group_independent_sink_effects(sink_effects):
     if len(group) == 1:
       out.append(effect)
     else:
-      out.append(UOp.group(*(x.src[0] for x in group)).end(*ranges))
+      out.append(tg.group_uops(*(x.src[0] for x in group)).end(*ranges))
   return out
 
 def prepare_kernel_stages(kernel):
@@ -318,7 +306,7 @@ def prepare_kernel_stages(kernel):
 def prepare_kernel_for_lowering(kernel):
   return prepare_kernel_stages(kernel)[-1][1]
 
-def lower_kernel(kernel, *args: UOp) -> UOp:
+def lower_kernel(kernel, *args: tg.UOp) -> tg.UOp:
   kernel = prepare_kernel_for_lowering(kernel)
   if len(args) != len(kernel.args): raise ValueError(f"expected {len(kernel.args)} args, got {len(args)}")
   env = {arg.name: uop for arg, uop in zip(kernel.args, args)}
@@ -349,10 +337,9 @@ def lower_kernel(kernel, *args: UOp) -> UOp:
     for _, r in pending_shared:
       for x in r:
         if x not in rngs: rngs.append(x)
-    grouped = UOp.group(*stores) if len(stores) > 1 else stores[0]
+    grouped = tg.group_uops(*stores) if len(stores) > 1 else stores[0]
     sink_effects.append(grouped.end(*rngs))
   sinks = _group_independent_sink_effects(sink_effects)
   sinks += [env[arg.name] for arg in kernel.args if arg.name in updated_buffers]
   if not sinks: raise ValueError("kernel must produce at least one effect")
-  info = KernelInfo(name=kernel.name, opts_to_apply=())
-  return UOp.sink(*sinks, arg=info)
+  return tg.sink_uops(*sinks, name=kernel.name)

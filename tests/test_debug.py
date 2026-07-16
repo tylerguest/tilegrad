@@ -15,6 +15,14 @@ def has_tile_copy(body):
     if isinstance(op, Range) and has_tile_copy(op.body): return True
   return False
 
+def find_tile_copy(body):
+  for op in body:
+    if isinstance(op, TileCopy): return op
+    if isinstance(op, Range):
+      found = find_tile_copy(op.body)
+      if found is not None: return found
+  return None
+
 def tile_copy_builder():
   k = KernelBuilder("debug_tile_copy", ("out", "inp"))
   out = k.buffer("out", shape=(2, 3), dtype="float32")
@@ -86,6 +94,17 @@ class TestDebug(unittest.TestCase):
     dbg = inspect_kernel(tiled_gemm(3, 3, 5, BM=2, BN=2, BK=3))
     self.assertEqual(dbg.stages[0].name, "tile_ir")
     self.assertEqual(dbg.stages[-1].name, "scalar_ir")
+
+  def test_debug_preserves_tile_copy_coalesced_width(self):
+    k = KernelBuilder("debug_coalesced_width", ("out", "inp"))
+    out = k.buffer("out", shape=(4,), dtype="float32")
+    inp = k.buffer("inp", shape=(4,), dtype="float32")
+    k.copy(inp.tile(), out.tile(), coalesced_width=4)
+    dbg = inspect_kernel(k)
+    tile_copy = find_tile_copy(dbg.tile_ir.body)
+    self.assertIsNotNone(tile_copy)
+    self.assertEqual(tile_copy.coalesced_width, 4)
+    self.assertFalse(has_tile_copy(dbg.scalar_ir.body))
 
 
 if __name__ == "__main__":

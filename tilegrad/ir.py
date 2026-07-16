@@ -172,6 +172,7 @@ class TileCopy(Stmt, KernelOp):
   dst_mask: object | None = None
   guard: object | None = None
   fill: object | None = None
+  coalesced_width: int | None = None
   src_layout: object | None = None
   dst_layout: object | None = None
   index_names: tuple[str, ...] = ()

@@ -165,6 +165,11 @@ def _validate_tile_copy_stride(stride, name, buffers, indices, register_buffers,
   if isinstance(stride, int) and stride <= 0: raise ValueError(f"tile copy {name} must be positive: {stride}")
   validate_expr(stride, buffers, indices, register_buffers, fragments)
 
+def _validate_tile_copy_coalesced_width(width):
+  if width is None: return
+  if type(width) is not int: raise TypeError("tile copy coalesced_width must be an integer")
+  if width <= 0: raise ValueError("tile copy coalesced_width must be positive")
+
 def validate_tile_copy(stmt, buffers, indices, saw_effect, register_buffers=None, fragments=None):
   if stmt.src not in buffers: raise ValueError(f"unknown buffer: {stmt.src}")
   if stmt.dst not in buffers: raise ValueError(f"unknown buffer: {stmt.dst}")
@@ -212,6 +217,7 @@ def validate_tile_copy(stmt, buffers, indices, saw_effect, register_buffers=None
   if stmt.guard is not None: validate_expr(stmt.guard, buffers, tile_indices, register_buffers, fragments)
 
   if stmt.fill not in (None, 0): raise NotImplementedError("tile copy only supports fill=0")
+  _validate_tile_copy_coalesced_width(stmt.coalesced_width)
   if stmt.src_layout is not None: raise NotImplementedError("tile copy layouts are not supported yet")
   if stmt.dst_layout is not None: raise NotImplementedError("tile copy layouts are not supported yet")
   saw_effect[0] = True

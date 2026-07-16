@@ -674,5 +674,14 @@ class TestRuntime(unittest.TestCase):
     out_t = Tensor([9.0, 9.0, 9.0, 9.0])
     self.assertEqual(run(k, out_t, inp_t).tolist(), [1.0, 2.0, 3.0, 9.0])
 
+  def test_run_tile_view_copy_coalesced_width_metadata(self):
+    k = KernelBuilder("tile_view_copy_coalesced_width", ("out", "inp"))
+    out = k.buffer("out", shape=(4,), dtype="float32")
+    inp = k.buffer("inp", shape=(4,), dtype="float32")
+    k.copy(inp.tile(), out.tile(), coalesced_width=4)
+    inp_t = Tensor([1.0, 2.0, 3.0, 4.0])
+    out_t = Tensor.empty(4)
+    self.assertEqual(run(k, out_t, inp_t).tolist(), [1.0, 2.0, 3.0, 4.0])
+
 if __name__ == "__main__":
   unittest.main()

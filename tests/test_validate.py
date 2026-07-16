@@ -496,6 +496,23 @@ class TestValidate(unittest.TestCase):
     )
     with self.assertRaisesRegex(NotImplementedError, "fill=0"): validate_kernel(kernel)
 
+  def test_tile_copy_accepts_coalesced_width(self):
+    kernel = Kernel(
+      "tile_copy_coalesced_width",
+      (Arg("out"), Arg("inp")),
+      (TileCopy("inp", "out", (4,), (0,), (0,), coalesced_width=4),)
+    )
+    validate_kernel(kernel)
+
+  def test_tile_copy_bad_coalesced_width_fails(self):
+    kernel = Kernel(
+      "tile_copy_bad_coalesced_width",
+      (Arg("out"), Arg("inp")),
+      (TileCopy("inp", "out", (4,), (0,), (0,), coalesced_width=0),)
+    )
+    with self.assertRaisesRegex(ValueError, "coalesced_width"):
+      validate_kernel(kernel)
+
   def test_tile_copy_layout_fails(self):
     kernel = Kernel(
       "tile_copy_bad_layout",

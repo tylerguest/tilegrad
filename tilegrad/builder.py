@@ -222,7 +222,7 @@ class KernelBuilder:
       raise ValueError("pipelined stages must be a positive integer")
     return _RangeContext(self, name, extent, "loop")
 
-  def copy(self, src, dst, shape=None, stride=None, src_row_off=0, src_col_off=0, src_origin=None, dst_origin=None, src_stride=None, dst_stride=None, guard=None, fill=None,):
+  def copy(self, src, dst, shape=None, stride=None, src_row_off=0, src_col_off=0, src_origin=None, dst_origin=None, src_stride=None, dst_stride=None, guard=None, fill=None, coalesced_width=None,):
     src_tile = src if isinstance(src, TileView) else None
     dst_tile = dst if isinstance(dst, TileView) else None
     src_ref = _buffer_ref(src)
@@ -233,6 +233,8 @@ class KernelBuilder:
     if len(shape) == 0: raise ValueError("copy shape must not be empty")
     if len(shape) > 3: raise NotImplementedError(f"copy does not support {len(shape)}D")
     if fill not in (None, 0): raise NotImplementedError("copy only supports fill=0")
+    if coalesced_width is not None and (type(coalesced_width) is not int or coalesced_width <= 0):
+      raise ValueError("copy coalesced_width must be a positive integer")
     _validate_tile_copy_shape(src_tile, shape, "source")
     _validate_tile_copy_shape(dst_tile, shape, "destination")
 
@@ -271,6 +273,7 @@ class KernelBuilder:
         dst_mask=dst_tile.mask if dst_tile is not None else None,
         guard=guard,
         fill=fill,
+        coalesced_width=coalesced_width,
         src_layout=src_tile.layout if src_tile is not None else None,
         dst_layout=dst_tile.layout if dst_tile is not None else None,
         index_names=names,
