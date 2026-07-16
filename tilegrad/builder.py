@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from tilegrad.ir import Add, Alloc, Arg, Barrier, FragmentAlloc, FragmentClear, FragmentGemm, FragmentStore, Index2D, Kernel, Load, LoadIf, Mul, Not, Range, Set, SetIf, Store, StoreIf, TileCopy, Var
+from tilegrad.ir import Add, Alloc, Arg, Barrier, FragmentAlloc, FragmentClear, FragmentGemm, FragmentStore, Index2D, Kernel, Load, LoadIf, Mul, Not, Range, Set, SetIf, Store, StoreIf, TileCopy, TileMMA, Var
 
 @dataclass(frozen=True)
 class TileView:
@@ -180,15 +180,32 @@ class KernelBuilder:
   def set_if(self, cond, buffer, index, value):
     self._current_body().append(SetIf(cond, _buffer_name(buffer), _buffer_index(buffer, index), value))
 
-  def clear(self, fragment):
-    self._current_body().append(FragmentClear(_fragment_name(fragment)))
+  def clear(self, buffer):
+    if isinstance(buffer, FragmentRef):
+      self._current_body().append(FragmentClear(_fragment_name(buffer)))
+      return
+    ref = _buffer_ref(buffer)
+    if not isinstance(ref, BufferRef): raise TypeError("clear requires a buffer or fragment reference")
+    if ref.shape is None: raise ValueError("clear requires shaped buffer reference")
+    if not isinstance(ref.shape, tuple): raise TypeError("clear buffer shape must be a tuple")
+    if not all(isinstance(dim, int) for dim in ref.shape): raise TypeError("clear requires static integer shape")
+    for i in range(_numel(ref.shape)):
+      self._current_body().append(Set(ref.name, i, 0))
 
   def gemm(self, a, b, c, trans_a=False, trans_b=False):
-    if not isinstance(a, BufferRef): raise TypeError("gemm A must be a buffer reference")
-    if not isinstance(b, BufferRef): raise TypeError("gemm B must be a buffer reference")
-    if not isinstance(c, FragmentRef): raise TypeError("gemm C must be a fragment reference")
-    if a.shape is None or b.shape is None: raise ValueError("gemm inputs require shapes")
-    self._current_body().append(FragmentGemm(a.name, b.name, c.name, a.shape, b.shape, c.shape, trans_a, trans_b))
+    a_ref = _buffer_ref(a)
+    b_ref = _buffer_ref(b)
+    if not isinstance(a_ref, BufferRef): raise TypeError("gemm A must be a buffer reference")
+    if not isinstance(b_ref, BufferRef): raise TypeError("gemm B must be a buffer reference")
+    if a_ref.shape is None or b_ref.shape is None: raise ValueError("gemm inputs require shapes")
+    if isinstance(c, FragmentRef):
+      self._current_body().append(FragmentGemm(a_ref.name, b_ref.name, c.name, a_ref.shape, b_ref.shape, c.shape, trans_a, trans_b))
+      return
+    c_ref = _buffer_ref(c)
+    if not isinstance(c_ref, BufferRef): raise TypeError("gemm C must be a register buffer or fragment reference")
+    if c_ref.shape is None: raise ValueError("gemm C requires shape")
+    if c_ref.scope != "register": raise ValueError("gemm C must be a register buffer reference")
+    self._current_body().append(TileMMA(a_ref.name, b_ref.name, c_ref.name, a_ref.shape, b_ref.shape, c_ref.shape, trans_a, trans_b))
 
   def store_fragment(self, src, dst, dst_origin, guard=None, bounds=None):
     if not isinstance(src, FragmentRef): raise TypeError("store_fragment src must be a fragment reference")

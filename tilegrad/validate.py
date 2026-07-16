@@ -1,4 +1,4 @@
-from tilegrad.ir import Alloc, Barrier, BinaryExpr, Const, FragmentAlloc, FragmentClear, FragmentGemm, FragmentStore, Kernel, Load, LoadIf, Not, Range, Store, StoreIf, Index2D, Set, SetIf, TileCopy, Var
+from tilegrad.ir import Alloc, Barrier, BinaryExpr, Const, FragmentAlloc, FragmentClear, FragmentGemm, FragmentStore, Kernel, Load, LoadIf, Not, Range, Store, StoreIf, Index2D, Set, SetIf, TileCopy, TileMMA, Var
 
 VALID_RANGE_AXES = ("loop", "reduce", "global", "local", "unroll")
 
@@ -222,22 +222,41 @@ def validate_tile_copy(stmt, buffers, indices, saw_effect, register_buffers=None
   if stmt.dst_layout is not None: raise NotImplementedError("tile copy layouts are not supported yet")
   saw_effect[0] = True
 
-def _validate_tile_copies_in_range(op, buffers, indices, register_buffers, fragments):
+def validate_tile_mma(stmt, buffers, saw_effect, buffer_spaces=None):
+  if stmt.a not in buffers: raise ValueError(f"unknown buffer: {stmt.a}")
+  if stmt.b not in buffers: raise ValueError(f"unknown buffer: {stmt.b}")
+  if stmt.c not in buffers: raise ValueError(f"unknown buffer: {stmt.c}")
+  for shape in (stmt.a_shape, stmt.b_shape, stmt.c_shape):
+    if not isinstance(shape, tuple) or len(shape) != 2: raise ValueError(f"tile mma shape must be a 2D tuple: {shape}")
+    if not all(isinstance(dim, int) and dim > 0 for dim in shape): raise ValueError(f"tile mma shape must contain positive integers: {shape}")
+  (a_m, a_k), (b_k, b_n), c_shape = _fragment_gemm_effective_shapes(stmt)
+  if a_k != b_k or c_shape != (a_m, b_n):
+    raise ValueError(f"tile mma shape mismatch: A{stmt.a_shape} B{stmt.b_shape} C{stmt.c_shape}")
+  if buffer_spaces is not None:
+    if buffer_spaces.get(stmt.a) != "shared": raise ValueError(f"tile mma A must be shared buffer: {stmt.a}")
+    if buffer_spaces.get(stmt.b) != "shared": raise ValueError(f"tile mma B must be shared buffer: {stmt.b}")
+    if buffer_spaces.get(stmt.c) != "register": raise ValueError(f"tile mma C must be register buffer: {stmt.c}")
+  saw_effect[0] = True
+
+def _validate_tile_copies_in_range(op, buffers, indices, register_buffers, fragments, buffer_spaces):
   validate_shape(op.extent, buffers)
   if op.name in indices: raise ValueError(f"duplicate range variable: {op.name}")
   if op.axis not in VALID_RANGE_AXES: raise ValueError(f"unknown range axis: {op.axis}")
   indices = indices | {op.name}
   for stmt in op.body:
     if isinstance(stmt, Range):
-      _validate_tile_copies_in_range(stmt, buffers, indices, register_buffers, fragments)
+      _validate_tile_copies_in_range(stmt, buffers, indices, register_buffers, fragments, buffer_spaces)
     elif isinstance(stmt, TileCopy):
       validate_tile_copy(stmt, buffers, indices, [False], register_buffers, fragments)
+    elif isinstance(stmt, TileMMA):
+      validate_tile_mma(stmt, buffers, [False], buffer_spaces)
 
 def validate_tile_copies(kernel):
   if not isinstance(kernel, Kernel): raise TypeError(f"expected Kernel, got {type(kernel).__name__}")
   buffers = set()
   register_buffers = set()
   fragments = {}
+  buffer_spaces = {arg.name: "global" for arg in kernel.args}
   for arg in kernel.args:
     if arg.name in buffers: raise ValueError(f"duplicate arg name: {arg.name}")
     buffers.add(arg.name)
@@ -247,16 +266,20 @@ def validate_tile_copies(kernel):
       if op.space not in ("shared", "register"): raise NotImplementedError(op.space)
       validate_shape(op.shape, buffers)
       buffers.add(op.name)
+      buffer_spaces[op.name] = op.space
       if op.space == "register": register_buffers.add(op.name)
     elif isinstance(op, FragmentAlloc):
       if op.name in buffers: raise ValueError(f"duplicate buffer name: {op.name}")
       validate_fragment_shape(op.shape)
       buffers.add(op.name)
       fragments[op.name] = op
+      buffer_spaces[op.name] = "fragment"
     elif isinstance(op, Range):
-      _validate_tile_copies_in_range(op, buffers, set(), register_buffers, fragments)
+      _validate_tile_copies_in_range(op, buffers, set(), register_buffers, fragments, buffer_spaces)
     elif isinstance(op, TileCopy):
       validate_tile_copy(op, buffers, set(), [False], register_buffers, fragments)
+    elif isinstance(op, TileMMA):
+      validate_tile_mma(op, buffers, [False], buffer_spaces)
 
 def validate_range(op, buffers, indices, saw_effect, register_buffers=None, fragments=None):
   validate_shape(op.extent, buffers)
@@ -277,6 +300,8 @@ def validate_range(op, buffers, indices, saw_effect, register_buffers=None, frag
       validate_fragment_stmt(stmt, buffers, indices, saw_effect, register_buffers, fragments)
     elif isinstance(stmt, TileCopy):
       validate_tile_copy(stmt, buffers, indices, saw_effect, register_buffers, fragments)
+    elif isinstance(stmt, TileMMA):
+      validate_tile_mma(stmt, buffers, saw_effect)
     elif isinstance(stmt, Barrier):
       if not saw_effect[0]: raise ValueError("barrier requires a previous effect")
       saw_effect[0] = True
@@ -287,6 +312,7 @@ def validate_kernel(kernel):
   buffers = set()
   register_buffers = set()
   fragments = {}
+  buffer_spaces = {arg.name: "global" for arg in kernel.args}
   for arg in kernel.args:
     if arg.name in buffers: raise ValueError(f"duplicate arg name: {arg.name}")
     buffers.add(arg.name)
@@ -297,12 +323,14 @@ def validate_kernel(kernel):
       if op.space not in ("shared", "register"): raise NotImplementedError(op.space)
       validate_shape(op.shape, buffers)
       buffers.add(op.name)
+      buffer_spaces[op.name] = op.space
       if op.space == "register": register_buffers.add(op.name)
     elif isinstance(op, FragmentAlloc):
       if op.name in buffers: raise ValueError(f"duplicate buffer name: {op.name}")
       validate_fragment_shape(op.shape)
       buffers.add(op.name)
       fragments[op.name] = op
+      buffer_spaces[op.name] = "fragment"
     elif isinstance(op, SetIf):
       validate_expr(op.cond, buffers, set(), register_buffers, fragments)
       validate_store(op, buffers, set(), register_buffers, fragments)
@@ -323,6 +351,8 @@ def validate_kernel(kernel):
       validate_fragment_stmt(op, buffers, set(), saw_effect, register_buffers, fragments)
     elif isinstance(op, TileCopy):
       validate_tile_copy(op, buffers, set(), saw_effect, register_buffers, fragments)
+    elif isinstance(op, TileMMA):
+      validate_tile_mma(op, buffers, saw_effect, buffer_spaces)
     elif isinstance(op, Barrier):
       if not saw_effect[0]: raise ValueError("barrier requires a previous effect")
       saw_effect[0] = True

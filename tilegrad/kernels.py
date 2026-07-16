@@ -5,33 +5,27 @@ def tiled_gemm(M, N, K, BM=2, BN=2, BK=3):
   k = KernelBuilder("tilegrad_tiled_gemm", ("out", "a", "b"))
   KTILES = ceildiv(K, BK)
 
-  k.alloc("as", BM * BK, "float32")
-  k.alloc("bs", BK * BN, "float32")
-  k.alloc("acc", 1, "float32", "register")
+  out = k.buffer("out", shape=(M, N), dtype="float32")
+  a = k.buffer("a", shape=(M, K), dtype="float32")
+  b = k.buffer("b", shape=(K, N), dtype="float32")
 
-  out = k.buffer("out", shape=(M, N))
-  a = k.buffer("a", shape=(M, K))
-  b = k.buffer("b", shape=(K, N))
-  as_tile = k.buffer("as", shape=(BM, BK))
-  bs_tile = k.buffer("bs", shape=(BK, BN))
-  acc = k.buffer("acc")
+  as_tile = k.shared("as", shape=(BM, BK), dtype="float32")
+  bs_tile = k.shared("bs", shape=(BK, BN), dtype="float32")
+  acc = k.register("acc", shape=(BM, BN), dtype="float32")
 
   with k.grid(ceildiv(M, BM), ceildiv(N, BN)) as (bi, bj):
-    with k.threads(BM, BN) as (ti, tj):
-      gi = bi * BM + ti
-      gj = bj * BN + tj
-      acc[0] = 0
-      with k.range("ko", KTILES) as ko:
-        with k.range("kk_a", BK) as kk_a:
-          gk_a = ko * BK + kk_a
-          k.store(as_tile, (ti, kk_a), k.load_if((gi < M) & (gk_a < K), a, (gi, gk_a)),)
-        with k.range("kk_b", BK) as kk_b:
-          gk_b = ko * BK + kk_b
-          k.store(bs_tile, (kk_b, tj), k.load_if((gk_b < K) & (gj < N), b, (gk_b, gj)),)
+    with k.threads(1) as _:
+      k.clear(acc)
+      for ko in range(KTILES):
+        k.copy(a.tile(origin=(bi * BM, ko * BK), shape=(BM, BK), bounds=(M, K)), as_tile.tile(),)
+        k.copy(b.tile(origin=(ko * BK, bj * BN), shape=(BK, BN), bounds=(K, N)), bs_tile.tile(),)
         k.barrier()
-        with k.range("kk", BK, axis="reduce") as kk:
-          acc[0] = acc[0] + as_tile[ti, kk] * bs_tile[kk, tj]
-      k.store_if((gi < M) & (gj < N), out, (gi, gj), acc[0])
+        k.gemm(as_tile, bs_tile, acc)
+      for i in range(BM):
+        for j in range(BN):
+          row = bi * BM + i
+          col = bj * BN + j
+          k.store_if((row < M) & (col < N), out, (row, col), acc[i, j])
   return k
 
 def fragment_gemm(M, N, K, BM=8, BN=8, BK=8):

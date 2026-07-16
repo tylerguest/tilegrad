@@ -1,4 +1,4 @@
-from tilegrad.ir import Add, Alloc, And, FragmentAlloc, FragmentClear, FragmentGemm, FragmentStore, Index2D, Kernel, Load, Lt, Mul, Range, Set, Store, StoreIf
+from tilegrad.ir import Add, Alloc, And, FragmentAlloc, FragmentClear, FragmentGemm, FragmentStore, Index2D, Kernel, Load, Lt, Mul, Range, Set, Store, StoreIf, TileMMA
 
 def _add_const(expr, value):
   return expr if value == 0 else Add(expr, value)
@@ -32,6 +32,19 @@ class _FragmentExpander:
     if name not in self.fragments: raise ValueError(f"unknown fragment: {name}")
     return self.fragments[name].shape
 
+  @staticmethod
+  def _expand_gemm(op, m, n):
+    k = op.a_shape[0] if op.trans_a else op.a_shape[1]
+    out = []
+    for kk in range(k):
+      for i in range(m):
+        for j in range(n):
+          acc_idx = _flatten(i, j, n)
+          a_idx = Index2D(kk, i, op.a_shape[1]) if op.trans_a else Index2D(i, kk, op.a_shape[1])
+          b_idx = Index2D(j, kk, op.b_shape[1]) if op.trans_b else Index2D(kk, j, op.b_shape[1])
+          out.append(Set(op.c, acc_idx, Add(Load(op.c, acc_idx), Mul(Load(op.a, a_idx), Load(op.b, b_idx)))))
+    return tuple(out)
+
   def expand_op(self, op):
     if isinstance(op, FragmentAlloc):
       self.fragments[op.name] = op
@@ -43,18 +56,10 @@ class _FragmentExpander:
       m, n = self.fragment_shape(op.buffer)
       return tuple(Set(op.buffer, _flatten(i, j, n), 0) for i in range(m) for j in range(n))
     if isinstance(op, FragmentGemm):
-      m, n = self.fragment_shape(op.c)
-      k = op.a_shape[0] if op.trans_a else op.a_shape[1]
       self.gemm_counter += 1
-      out = []
-      for kk in range(k):
-        for i in range(m):
-          for j in range(n):
-            acc_idx = _flatten(i, j, n)
-            a_idx = Index2D(kk, i, op.a_shape[1]) if op.trans_a else Index2D(i, kk, op.a_shape[1])
-            b_idx = Index2D(j, kk, op.b_shape[1]) if op.trans_b else Index2D(kk, j, op.b_shape[1])
-            out.append(Set(op.c, acc_idx, Add(Load(op.c, acc_idx), Mul(Load(op.a, a_idx), Load(op.b, b_idx)))))
-      return tuple(out)
+      return self._expand_gemm(op, *self.fragment_shape(op.c))
+    if isinstance(op, TileMMA):
+      return self._expand_gemm(op, *op.c_shape)
     if isinstance(op, FragmentStore):
       m, n = self.fragment_shape(op.src)
       out = []

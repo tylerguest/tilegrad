@@ -158,6 +158,17 @@ class FragmentStore(Stmt):
   bounds: tuple[object, object] | None = None
 
 @dataclass(frozen=True)
+class TileMMA(Stmt, KernelOp):
+  a: str
+  b: str
+  c: str
+  a_shape: tuple[int, int]
+  b_shape: tuple[int, int]
+  c_shape: tuple[int, int]
+  trans_a: bool = False
+  trans_b: bool = False
+
+@dataclass(frozen=True)
 class TileCopy(Stmt, KernelOp):
   src: str
   dst: str
