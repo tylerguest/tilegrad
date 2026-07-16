@@ -21,7 +21,7 @@ TileGrad is already a useful proof-of-concept:
 - It has a hardened `TileView` MVP: buffers carry `dtype`, `scope`, and `stride` metadata, and `copy(...)` accepts tile views with shape, bounds, mask, and destination-guard coverage.
 - It has a first tile-level IR node: `TileCopy` preserves copy intent in `k.build()` and expands through scalar fallback before tinygrad UOp lowering.
 
-The main gap is no longer preserving copy intent. The next step is to harden unexpanded tile IR validation, stride metadata correctness, and debugging before adding layout/coalescing/vectorized copy policies.
+The main gap is no longer preserving copy intent. The next step is to add public debug/inspect helpers before adding layout/coalescing/vectorized copy policies.
 
 ## Status Snapshot
 
@@ -40,13 +40,14 @@ Completed:
 - A TileView shared-copy example, a TileView GEMM example, and TileView copy tests.
 - `TileCopy` IR node for copy intent.
 - `expand_tile_copies(...)` scalar fallback pass.
+- `validate_tile_copy(...)` and a `validate_tile_copies(...)` prepass for unexpanded TileCopy IR before scalar fallback.
+- Explicit 2D stride handling for `BufferRef` tuple indexing and TileView/TileCopy fallback indexing.
 - A TileCopy inspection example showing tile IR, expanded scalar IR, and runtime output.
 
 Partially complete:
 
 - Phase 1 core stability is mostly complete, but public debug/render helpers and a dedicated tinygrad compatibility adapter are still pending.
-- Phase 3 Tile IR has `TileCopy` with scalar fallback, but unexpanded tile IR validation and public debug helpers still need hardening.
-- `BufferRef` carries stride metadata, but explicit 2D stride handling still needs a regression pass across tuple indexing and tile copies.
+- Phase 3 Tile IR has `TileCopy` with scalar fallback and validation, but public debug helpers still need hardening.
 
 Not started:
 
@@ -110,7 +111,7 @@ Work:
 - Done: keep `KernelBuilder` as the core frontend.
 - Done: keep `opts_to_apply=()` as the default for TileGrad-lowered kernels.
 - Done: add explicit `dtype`, `scope`, `shape`, and `stride` metadata to `BufferRef`.
-- Fix explicit 2D stride handling so `BufferRef` tuple indexing and TileView/TileCopy lowering consistently honor `BufferRef.stride` instead of silently falling back to compact shape-derived strides.
+- Done: fix explicit 2D stride handling so `BufferRef` tuple indexing and TileView/TileCopy lowering consistently honor `BufferRef.stride` instead of silently falling back to compact shape-derived strides.
 - Add public debug helpers for TileGrad IR, expanded IR, lowered UOps, and generated source.
 - Add a small tinygrad UOp adapter only for APIs that have already shown churn: scalar dtype, index/load/store, placeholders, ranges, and `KernelInfo`.
 
@@ -168,7 +169,7 @@ Success criteria:
 
 Goal: give tile operations stable IR nodes while preserving correctness through scalar fallback.
 
-Status: started. `TileCopy` exists and runs through scalar fallback; validation/debug hardening is next.
+Status: started. `TileCopy` exists, validates before scalar fallback, and runs through scalar fallback; public debug hardening is next.
 
 Add tile-level IR incrementally:
 
@@ -197,8 +198,8 @@ User tile API -> Tile IR -> direct vectorized/WMMA UOps
 
 Success criteria:
 
-- Pending: Tile IR validates shapes, bounds, dtypes, scopes, and layouts before expansion.
-- Pending: direct `TileCopy` IR rejects unsupported semantics, including nonzero fill and non-`None` layouts, until those policies have defined lowering behavior.
+- Done: TileCopy IR validates source/destination buffers, shapes, origins, bounds, masks, guards, strides, fill, and layouts before expansion.
+- Done: direct `TileCopy` IR rejects unsupported semantics, including nonzero fill and non-`None` layouts, until those policies have defined lowering behavior.
 - Done: `TileCopy` scalar fallback passes existing copy and GEMM tests.
 - Done: Tile IR can be printed independently from scalar-expanded IR through the TileCopy inspection example.
 - Pending: public helpers expose unexpanded TileGrad IR, expanded scalar IR, lowered UOps, and generated source.
@@ -299,27 +300,22 @@ Success criteria:
 
 ## Priority Order
 
-1. Harden `TileCopy` validation and public debug/inspect helpers.
-2. Fix explicit 2D stride correctness for `BufferRef` tuple indexing and TileView/TileCopy paths.
-3. Add a small tinygrad compatibility adapter.
-4. Add layout and memory movement policy hooks for `TileCopy`.
-5. Add copy microbenchmarks.
-6. Add `TileMMA` contract with scalar fallback.
-7. Add explicit `Ops.WMMA` lowering for one case.
-8. Add real pipelining.
-9. Add autotuning.
+1. Add public debug/inspect helpers for TileGrad IR, expanded scalar IR, lowered UOps, and generated source where stable.
+2. Add a small tinygrad compatibility adapter.
+3. Add layout and memory movement policy hooks for `TileCopy`.
+4. Add copy microbenchmarks.
+5. Add `TileMMA` contract with scalar fallback.
+6. Add explicit `Ops.WMMA` lowering for one case.
+7. Add real pipelining.
+8. Add autotuning.
 
 ## Immediate Next Milestone
 
-Harden `TileCopy` as public tile IR:
+Add public inspect/debug helpers:
 
-- Add `validate_tile_copy(...)` so unexpanded `TileCopy` kernels validate source/destination buffers, shape, origins, bounds, masks, guards, strides, fill, and layouts.
-- Validate unexpanded tile IR before scalar fallback expansion, then validate the expanded scalar IR again before tinygrad UOp lowering.
-- Add TileCopy validation tests for valid copies, unknown buffers, empty shapes, bad origin rank, bad bounds rank, bad index-name count, unknown mask/guard variables, unsupported nonzero fill, and unsupported layout values.
-- Fix and test explicit 2D stride handling for `BufferRef(..., stride=...)` tuple indexing and TileView/TileCopy fallback indexing.
 - Add small public inspect helpers for unexpanded TileGrad IR and expanded scalar fallback IR.
+- Add helpers for lowered UOps and generated source where tinygrad exposes stable APIs.
 - Keep `lower_kernel(...)` on the safe path: `TileCopy -> scalar fallback IR -> tinygrad UOps`.
-- If dtype/scope validation needs metadata not currently preserved in `Kernel.args`, either validate only what the current IR can prove or add the smallest buffer metadata node needed before expanding public validation claims.
-- Run the full test suite plus `examples/builder_tilecopy_inspect.py` and the TileView GEMM example.
+- Run the full test suite plus `examples/builder_tilecopy_inspect.py`, the TileView GEMM example, and representative raw UOp examples.
 
 After that, add layout/coalescing policy hooks to `TileCopy` before attempting vectorized copies, async copies, or WMMA.
