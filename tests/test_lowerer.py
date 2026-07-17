@@ -646,6 +646,53 @@ class TestLowerer(unittest.TestCase):
       for end in reg_store_ends
     ))
 
+  # NOTE: multi-element register scope close inside k.range only preserves element 0.
+  # This is a known limitation: k.range("ko", ...) with multi-element register tiles
+  # is not yet supported (use Python for-loop instead). The register_numels infrastructure
+  # exists in the lowerer for a future fix.
+  def test_lower_multi_element_register_scope_closes_first_index(self):
+    ir = Kernel(
+      "test_lower_multi_element_register_scope_closes_first_index",
+      (Arg("out"),),
+      (
+        Alloc("acc", 2, "float32", "register"),
+        Set("acc", 0, 0),
+        Set("acc", 1, 0),
+        Range("ko", 2, (
+          Set("acc", 0, Add(Load("acc", 0), 1)),
+          Set("acc", 1, Add(Load("acc", 1), 10)),
+        )),
+        Store("out", 0, Load("acc", 0)),
+        Store("out", 1, Load("acc", 1)),
+      ),
+    )
+    out = UOp.placeholder((2,), dtypes.float, slot=-1)
+    sink = lower_kernel(ir, out)
+
+    ranges = [u for u in sink.toposort() if u.op is Ops.RANGE]
+    self.assertEqual(len(ranges), 1)
+    ko = ranges[0]
+
+    def walk_stores(u):
+      if u.op is Ops.STORE and u.src[0].op is Ops.INDEX:
+        buf = u.src[0].src[0]
+        idx = u.src[0].src[1]
+        if hasattr(buf, 'addrspace') and buf.addrspace is AddrSpace.REG and idx.op is Ops.CONST:
+          return {idx.arg}
+      if u.op is Ops.GROUP:
+        out = set()
+        for s in u.src: out |= walk_stores(s)
+        return out
+      return set()
+
+    closed_indices = sorted({
+      idx
+      for end in sink.toposort()
+      if end.op is Ops.END and ko in end.src[1:]
+      for idx in walk_stores(end.src[0])
+    })
+    self.assertEqual(closed_indices, [0])
+
   def test_lower_unrolls_register_tile_indices(self):
     ir = Kernel(
       "test_lower_unrolls_register_tile_indices",

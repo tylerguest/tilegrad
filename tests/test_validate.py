@@ -408,6 +408,88 @@ class TestValidate(unittest.TestCase):
     with self.assertRaisesRegex(ValueError, "invalid shape dimension"):
       validate_kernel(kernel)
   
+  def test_validate_accepts_tile_mma(self):
+    kernel = Kernel(
+      "tile_mma_ok",
+      (Arg("out"),),
+      (
+        Alloc("as", 6, "float32", "shared"),
+        Alloc("bs", 6, "float32", "shared"),
+        Alloc("acc", 4, "float32", "register"),
+        TileMMA("as", "bs", "acc", (2, 3), (3, 2), (2, 2)),
+      ),
+    )
+    validate_kernel(kernel)
+
+  def test_tile_mma_unknown_buffer_fails(self):
+    kernel = Kernel(
+      "tile_mma_bad_buffer",
+      (Arg("out"),),
+      (
+        Alloc("bs", 6, "float32", "shared"),
+        Alloc("acc", 4, "float32", "register"),
+        TileMMA("missing", "bs", "acc", (2, 3), (3, 2), (2, 2)),
+      ),
+    )
+    with self.assertRaisesRegex(ValueError, "unknown buffer: missing"):
+      validate_kernel(kernel)
+
+  def test_tile_mma_shape_mismatch_fails(self):
+    kernel = Kernel(
+      "tile_mma_bad_shape",
+      (Arg("out"),),
+      (
+        Alloc("as", 8, "float32", "shared"),
+        Alloc("bs", 6, "float32", "shared"),
+        Alloc("acc", 4, "float32", "register"),
+        TileMMA("as", "bs", "acc", (2, 4), (3, 2), (2, 2)),
+      ),
+    )
+    with self.assertRaisesRegex(ValueError, "tile mma shape mismatch"):
+      validate_kernel(kernel)
+
+  def test_tile_mma_a_must_be_shared_fails(self):
+    kernel = Kernel(
+      "tile_mma_bad_a_scope",
+      (Arg("out"),),
+      (
+        Alloc("as", 6, "float32", "register"),
+        Alloc("bs", 6, "float32", "shared"),
+        Alloc("acc", 4, "float32", "register"),
+        TileMMA("as", "bs", "acc", (2, 3), (3, 2), (2, 2)),
+      ),
+    )
+    with self.assertRaisesRegex(ValueError, "tile mma A must be shared buffer"):
+      validate_kernel(kernel)
+
+  def test_tile_mma_b_must_be_shared_fails(self):
+    kernel = Kernel(
+      "tile_mma_bad_b_scope",
+      (Arg("out"),),
+      (
+        Alloc("as", 6, "float32", "shared"),
+        Alloc("bs", 6, "float32", "register"),
+        Alloc("acc", 4, "float32", "register"),
+        TileMMA("as", "bs", "acc", (2, 3), (3, 2), (2, 2)),
+      ),
+    )
+    with self.assertRaisesRegex(ValueError, "tile mma B must be shared buffer"):
+      validate_kernel(kernel)
+
+  def test_tile_mma_c_must_be_register_fails(self):
+    kernel = Kernel(
+      "tile_mma_bad_c_scope",
+      (Arg("out"),),
+      (
+        Alloc("as", 6, "float32", "shared"),
+        Alloc("bs", 6, "float32", "shared"),
+        Alloc("acc", 4, "float32", "shared"),
+        TileMMA("as", "bs", "acc", (2, 3), (3, 2), (2, 2)),
+      ),
+    )
+    with self.assertRaisesRegex(ValueError, "tile mma C must be register buffer"):
+      validate_kernel(kernel)
+
   def test_validate_accepts_tile_copy(self):
     kernel = Kernel(
       "tile_copy_ok",

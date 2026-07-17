@@ -2,6 +2,7 @@ import unittest
 from tinygrad import Tensor
 from tilegrad.builder import KernelBuilder
 from tilegrad.ir import *
+from tilegrad.ir import Arg, Range, FragmentGemm, FragmentClear, FragmentAlloc, FragmentStore, TileCopy, TileMMA, Alloc, Set
 from tilegrad.lowerer import lower_kernel
 from tilegrad.tiles import expand_tile_copies
 
@@ -147,6 +148,64 @@ class TestBuilder(unittest.TestCase):
     acc = k.fragment("acc", (2, 2), "float32")
     with self.assertRaisesRegex(ValueError, "gemm inputs require shapes"):
       k.gemm(a, b, acc)
+
+  def test_builder_tile_mma_ir(self):
+    k = KernelBuilder("tile_mma", ("out",))
+    as_tile = k.shared("as", shape=(2, 3), dtype="float32")
+    bs_tile = k.shared("bs", shape=(3, 2), dtype="float32")
+    acc = k.register("acc", shape=(2, 2), dtype="float32")
+    with k.range("i", 1):
+      k.gemm(as_tile, bs_tile, acc)
+    expected = Kernel(
+      "tile_mma",
+      (Arg("out"),),
+      (
+        Alloc("as", 6, "float32", "shared"),
+        Alloc("bs", 6, "float32", "shared"),
+        Alloc("acc", 4, "float32", "register"),
+        Range("i", 1, (TileMMA("as", "bs", "acc", (2, 3), (3, 2), (2, 2)),)),
+      ),
+    )
+    self.assertEqual(k.build(), expected)
+
+  def test_builder_tile_mma_transpose_flags_ir(self):
+    k = KernelBuilder("tile_mma_transpose", ("out",))
+    as_tile = k.shared("as", shape=(3, 2), dtype="float32")
+    bs_tile = k.shared("bs", shape=(2, 3), dtype="float32")
+    acc = k.register("acc", shape=(2, 2), dtype="float32")
+    with k.range("i", 1):
+      k.gemm(as_tile, bs_tile, acc, trans_a=True, trans_b=True)
+    expected = Kernel(
+      "tile_mma_transpose",
+      (Arg("out"),),
+      (
+        Alloc("as", 6, "float32", "shared"),
+        Alloc("bs", 6, "float32", "shared"),
+        Alloc("acc", 4, "float32", "register"),
+        Range("i", 1, (TileMMA("as", "bs", "acc", (3, 2), (2, 3), (2, 2), True, True),)),
+      ),
+    )
+    self.assertEqual(k.build(), expected)
+
+  def test_builder_clear_register_buffer_ir(self):
+    k = KernelBuilder("clear_register_tile", ("out",))
+    acc = k.register("acc", shape=(2, 2), dtype="float32")
+    with k.range("i", 1):
+      k.clear(acc)
+    expected = Kernel(
+      "clear_register_tile",
+      (Arg("out"),),
+      (
+        Alloc("acc", 4, "float32", "register"),
+        Range("i", 1, (
+          Set("acc", 0, 0),
+          Set("acc", 1, 0),
+          Set("acc", 2, 0),
+          Set("acc", 3, 0),
+        )),
+      ),
+    )
+    self.assertEqual(k.build(), expected)
 
   def test_store_fragment_requires_fragment_src(self):
     k = KernelBuilder("bad_store_fragment", ("out",))

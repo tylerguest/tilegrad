@@ -552,6 +552,14 @@ class TestRuntime(unittest.TestCase):
     out, expected = run_tiled_gemm_case(3, 4, 5, BM=2, BN=2, BK=3)
     self.assertEqual(out, expected)
   
+  def test_run_canonical_tiled_gemm_rectangular_tiles(self):
+    out, expected = run_tiled_gemm_case(4, 5, 6, BM=2, BN=3, BK=4)
+    self.assertEqual(out, expected)
+
+  def test_run_canonical_tiled_gemm_single_k_tile_with_mn_edges(self):
+    out, expected = run_tiled_gemm_case(5, 3, 2, BM=3, BN=2, BK=4)
+    self.assertEqual(out, expected)
+
   def test_run_canonical_tiled_gemm_flagship(self):
     M, N, K = 3, 3, 5
     k = tiled_gemm(M, N, K, BM=2, BN=2, BK=3)

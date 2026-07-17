@@ -1,5 +1,5 @@
 import unittest
-from tilegrad.ir import Add, Alloc, And, Arg, Barrier, Const, FloorDiv, FragmentAlloc, FragmentClear, FragmentGemm, FragmentStore, Kernel, Load, LoadIf, Lt, Mod, Mul, Range, Store, BinaryExpr, Expr, KernelOp, Stmt, Set, SetIf, Sub, Index2D, Var, and_, lt
+from tilegrad.ir import Add, Alloc, And, Arg, Barrier, Const, FloorDiv, FragmentAlloc, FragmentClear, FragmentGemm, FragmentStore, Kernel, Load, LoadIf, Lt, Mod, Mul, Range, Store, BinaryExpr, Expr, KernelOp, Stmt, Set, SetIf, Sub, Index2D, TileMMA, Var, and_, lt
 from tilegrad.utils import ceildiv_expr
 
 class TestIR(unittest.TestCase):
@@ -90,6 +90,7 @@ class TestIR(unittest.TestCase):
     self.assertIsInstance(SetIf(Lt(Var("i"), 3), "out", Var("i"), 1), Stmt)
     self.assertIsInstance(FragmentClear("acc"), Stmt)
     self.assertIsInstance(FragmentGemm("as", "bs", "acc", (2, 3), (3, 2), (2, 2)), Stmt)
+    self.assertIsInstance(TileMMA("as", "bs", "acc", (2, 3), (3, 2), (2, 2)), Stmt)
     self.assertIsInstance(FragmentStore("acc", "out", 0, 0, 3), Stmt)
   
   def test_kernel_op_markers(self):
@@ -97,6 +98,7 @@ class TestIR(unittest.TestCase):
     self.assertIsInstance(FragmentAlloc("acc", (2, 2), "float32"), KernelOp)
     self.assertIsInstance(Range("i", 4, ()), KernelOp)
     self.assertIsInstance(Barrier(), KernelOp)
+    self.assertIsInstance(TileMMA("as", "bs", "acc", (2, 3), (3, 2), (2, 2)), KernelOp)
   
   def test_sub(self):
     expr = Sub("i", 1)
@@ -165,6 +167,24 @@ class TestIR(unittest.TestCase):
 
   def test_fragment_gemm_transpose_flags(self):
     stmt = FragmentGemm("as", "bs", "acc", (3, 2), (2, 3), (2, 2), trans_a=True, trans_b=True)
+    self.assertTrue(stmt.trans_a)
+    self.assertTrue(stmt.trans_b)
+
+  def test_tile_mma(self):
+    stmt = TileMMA("as", "bs", "acc", (2, 3), (3, 2), (2, 2))
+    self.assertEqual(stmt.a, "as")
+    self.assertEqual(stmt.b, "bs")
+    self.assertEqual(stmt.c, "acc")
+    self.assertEqual(stmt.a_shape, (2, 3))
+    self.assertEqual(stmt.b_shape, (3, 2))
+    self.assertEqual(stmt.c_shape, (2, 2))
+    self.assertFalse(stmt.trans_a)
+    self.assertFalse(stmt.trans_b)
+    self.assertIsInstance(stmt, Stmt)
+    self.assertIsInstance(stmt, KernelOp)
+
+  def test_tile_mma_transpose_flags(self):
+    stmt = TileMMA("as", "bs", "acc", (3, 2), (2, 3), (2, 2), trans_a=True, trans_b=True)
     self.assertTrue(stmt.trans_a)
     self.assertTrue(stmt.trans_b)
 

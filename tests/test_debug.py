@@ -5,7 +5,7 @@ from tinygrad.uop.ops import Ops, UOp
 
 from tilegrad import KernelBuilder
 from tilegrad.debug import DebugArtifact, inspect_kernel, ir_stages, lowered_uops, scalar_ir, tile_ir, uops_text
-from tilegrad.ir import Range, TileCopy
+from tilegrad.ir import Range, TileCopy, TileMMA
 from tilegrad.kernels import tiled_gemm
 
 
@@ -13,6 +13,12 @@ def has_tile_copy(body):
   for op in body:
     if isinstance(op, TileCopy): return True
     if isinstance(op, Range) and has_tile_copy(op.body): return True
+  return False
+
+def has_tile_mma(body):
+  for op in body:
+    if isinstance(op, TileMMA): return True
+    if isinstance(op, Range) and has_tile_mma(op.body): return True
   return False
 
 def find_tile_copy(body):
@@ -94,6 +100,13 @@ class TestDebug(unittest.TestCase):
     dbg = inspect_kernel(tiled_gemm(3, 3, 5, BM=2, BN=2, BK=3))
     self.assertEqual(dbg.stages[0].name, "tile_ir")
     self.assertEqual(dbg.stages[-1].name, "scalar_ir")
+
+  def test_canonical_tiled_gemm_preserves_tile_ops_before_scalar_ir(self):
+    dbg = inspect_kernel(tiled_gemm(3, 3, 5, BM=2, BN=2, BK=3))
+    self.assertTrue(has_tile_copy(dbg.tile_ir.body))
+    self.assertTrue(has_tile_mma(dbg.tile_ir.body))
+    self.assertFalse(has_tile_copy(dbg.scalar_ir.body))
+    self.assertFalse(has_tile_mma(dbg.scalar_ir.body))
 
   def test_debug_preserves_tile_copy_coalesced_width(self):
     k = KernelBuilder("debug_coalesced_width", ("out", "inp"))

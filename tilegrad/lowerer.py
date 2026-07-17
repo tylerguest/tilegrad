@@ -203,7 +203,7 @@ def lower_set(stmt, env, updated_buffers, local_updated, shared_read_effects, in
   updated_buffers.add(stmt.buffer)
   local_updated.add(stmt.buffer)
 
-def lower_range(op, env, effects, sink_effects, buffer_effects, pending_shared, store_state, shared_read_effects, updated_buffers, indices, range_slots, register_scopes, active_ranges=()):
+def lower_range(op, env, effects, sink_effects, buffer_effects, pending_shared, store_state, shared_read_effects, updated_buffers, indices, range_slots, register_scopes, register_numels, active_ranges=()):
   axis_type = AXIS_TYPES[op.axis]
   i = tg.range_uop(lower_shape(op.extent, env), range_slots[0], axis_type)
   range_slots[0] += 1
@@ -211,7 +211,7 @@ def lower_range(op, env, effects, sink_effects, buffer_effects, pending_shared, 
   active_ranges = active_ranges + (i,)
   local_updated = set()
   for stmt in op.body:
-    if isinstance(stmt, Range): local_updated |= lower_range(stmt, env, effects, sink_effects, buffer_effects, pending_shared, store_state, shared_read_effects, updated_buffers, indices, range_slots, register_scopes, active_ranges)
+    if isinstance(stmt, Range): local_updated |= lower_range(stmt, env, effects, sink_effects, buffer_effects, pending_shared, store_state, shared_read_effects, updated_buffers, indices, range_slots, register_scopes, register_numels, active_ranges)
     elif isinstance(stmt, Store): lower_store(stmt, env, effects, sink_effects, buffer_effects, pending_shared, store_state, shared_read_effects, indices, active_ranges)
     elif isinstance(stmt, StoreIf): lower_store_if(stmt, env, effects, sink_effects, buffer_effects, pending_shared, store_state, shared_read_effects, indices, active_ranges)
     elif isinstance(stmt, SetIf): lower_set(stmt, env, updated_buffers, local_updated, shared_read_effects, indices, active_ranges, op.axis, register_scopes, cond=stmt.cond)
@@ -226,6 +226,7 @@ def lower_range(op, env, effects, sink_effects, buffer_effects, pending_shared, 
         scope = register_scopes.get(name, ())
         if scope and scope[-1] is i:
           if i in buf.ranges:
+            if name not in register_numels: raise RuntimeError(f"missing register size for {name}")
             target = buf.flatten()[0]
             env[name] = target.set(target, end=i)
           register_scopes[name] = scope[:-1]
@@ -233,18 +234,21 @@ def lower_range(op, env, effects, sink_effects, buffer_effects, pending_shared, 
         env[name] = buf.end(i)
   return local_updated
 
-def lower_alloc(op, env, shared_slots, register_slots):
+def lower_alloc(op, env, shared_slots, register_slots, register_numels):
   if op.name in env: raise ValueError(f"duplicate buffer name: {op.name}")
+  numel = lower_shape(op.shape, env)
   if op.space == "shared":
     slot = shared_slots[0]
     shared_slots[0] += 1
     addrspace = tg.AddrSpace.LOCAL
   elif op.space == "register":
+    if not isinstance(numel, int): raise ValueError("register allocations require static integer shape")
     slot = register_slots[0]
     register_slots[0] += 1
+    register_numels[op.name] = numel
     addrspace = tg.AddrSpace.REG
   else: raise NotImplementedError(op.space)
-  env[op.name] = tg.placeholder((lower_shape(op.shape, env),), lower_dtype(op.dtype), slot, addrspace)
+  env[op.name] = tg.placeholder((numel,), lower_dtype(op.dtype), slot, addrspace)
 
 def lower_barrier(env, effects, buffer_effects, pending_shared, active_ranges=()):
   if not effects and not pending_shared: raise ValueError("barrier requires a previous effect")
@@ -322,13 +326,14 @@ def lower_kernel(kernel, *args: tg.UOp) -> tg.UOp:
   register_slots = [0]
   range_slots = [0]
   register_scopes = {}
+  register_numels = {}
   for op in kernel.body:
-    if isinstance(op, Alloc): lower_alloc(op, env, shared_slots, register_slots)
+    if isinstance(op, Alloc): lower_alloc(op, env, shared_slots, register_slots, register_numels)
     elif isinstance(op, SetIf): lower_set(op, env, updated_buffers, set(), shared_read_effects, indices, (), "loop", register_scopes, cond=op.cond)
     elif isinstance(op, Set): lower_set(op, env, updated_buffers, set(), shared_read_effects, indices, (), "loop", register_scopes)
     elif isinstance(op, StoreIf): lower_store_if(op, env, effects, sink_effects, buffer_effects, pending_shared, store_state, shared_read_effects,indices, ())
     elif isinstance(op, Store): lower_store(op, env, effects, sink_effects, buffer_effects, pending_shared, store_state, shared_read_effects, indices, ())
-    elif isinstance(op, Range): lower_range(op, env, effects, sink_effects, buffer_effects, pending_shared, store_state, shared_read_effects, updated_buffers, indices, range_slots, register_scopes)
+    elif isinstance(op, Range): lower_range(op, env, effects, sink_effects, buffer_effects, pending_shared, store_state, shared_read_effects, updated_buffers, indices, range_slots, register_scopes, register_numels)
     elif isinstance(op, Barrier): lower_barrier(env, effects, buffer_effects, pending_shared)
     else: raise NotImplementedError(type(op).__name__)
   if pending_shared:
