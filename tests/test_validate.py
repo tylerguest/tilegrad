@@ -490,6 +490,50 @@ class TestValidate(unittest.TestCase):
     with self.assertRaisesRegex(ValueError, "tile mma C must be register buffer"):
       validate_kernel(kernel)
 
+  def test_nested_tile_mma_c_must_be_register_fails(self):
+    kernel = Kernel(
+      "tile_mma_nested_bad_c_scope",
+      (Arg("out"),),
+      (
+        Alloc("as", 6, "float32", "shared"),
+        Alloc("bs", 6, "float32", "shared"),
+        Alloc("acc", 4, "float32", "shared"),
+        Range("i", 1, (
+          TileMMA("as", "bs", "acc", (2, 3), (3, 2), (2, 2)),
+        )),
+      ),
+    )
+    with self.assertRaisesRegex(ValueError, "tile mma C must be register buffer"):
+      validate_kernel(kernel)
+
+  def test_tile_mma_mixed_dtype_fails(self):
+    kernel = Kernel(
+      "tile_mma_mixed_dtype",
+      (Arg("out"),),
+      (
+        Alloc("as", 6, "float32", "shared"),
+        Alloc("bs", 6, "float16", "shared"),
+        Alloc("acc", 4, "float32", "register"),
+        TileMMA("as", "bs", "acc", (2, 3), (3, 2), (2, 2)),
+      ),
+    )
+    with self.assertRaisesRegex(NotImplementedError, "tile mma only supports float32"):
+      validate_kernel(kernel)
+
+  def test_tile_mma_float16_dtype_fails(self):
+    kernel = Kernel(
+      "tile_mma_float16_dtype",
+      (Arg("out"),),
+      (
+        Alloc("as", 6, "float16", "shared"),
+        Alloc("bs", 6, "float16", "shared"),
+        Alloc("acc", 4, "float16", "register"),
+        TileMMA("as", "bs", "acc", (2, 3), (3, 2), (2, 2)),
+      ),
+    )
+    with self.assertRaisesRegex(NotImplementedError, "tile mma only supports float32"):
+      validate_kernel(kernel)
+
   def test_validate_accepts_tile_copy(self):
     kernel = Kernel(
       "tile_copy_ok",

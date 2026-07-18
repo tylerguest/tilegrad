@@ -29,8 +29,9 @@ KernelBuilder -> tilegrad IR -> tinygrad UOps -> tinygrad runtime/codegen
 - Barriers
 - Guarded loads and stores
 - Tiled `copy(...)`
-- Fragment GEMM scalar expansion
-- Canonical grid/thread tiled GEMM
+- First-class `TileCopy` and `TileMMA` intent in debug IR
+- Fragment and `TileMMA` scalar fallback expansion
+- Canonical correctness-first tiled GEMM
 - Simple benchmark harness
 
 ## Setup
@@ -84,7 +85,15 @@ python3 examples/builder_canonical_tiled_gemm.py
 Expected output:
 
 ```text
+Result:
 [360.0, 375.0, 390.0, 910.0, 950.0, 990.0, 1460.0, 1525.0, 1590.0]
+Matches reference: True
+TileGrad IR stages:
+['tile_ir', 'expand_tile_copies', 'expand_fragments', 'unroll_register_tiles', 'scalar_ir']
+tile_ir has TileCopy: True
+tile_ir has TileMMA: True
+scalar_ir has TileCopy: False
+scalar_ir has TileMMA: False
 ```
 
 Run fragment GEMM under grid/thread axes:
@@ -193,12 +202,15 @@ k = tiled_gemm(M, N, K, BM, BN, BK)
 It uses:
 
 - `grid(ceildiv(M, BM), ceildiv(N, BN))`
-- `threads(BM, BN)`
-- one output element per local lane
+- `threads(1)`
+- one scalar-expanded register tile per grid point
+- `TileView -> TileCopy -> TileMMA` intent before scalar fallback
 - shared A/B tiles
 - K-tail guards
 - M/N edge guards
 - guarded output stores
+
+This path is correctness-first. It preserves tile-level intent for inspection, then expands to scalar operations before tinygrad UOp lowering. It is not intended to be fast yet.
 
 See:
 
@@ -297,4 +309,3 @@ DEBUG=6 python3 examples/builder_canonical_tiled_gemm.py
 DEBUG=6 python3 examples/builder_grid_threads_copy.py
 VIZ=1 python3 examples/ir_shared_copy.py
 ```
-

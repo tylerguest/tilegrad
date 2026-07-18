@@ -222,7 +222,7 @@ def validate_tile_copy(stmt, buffers, indices, saw_effect, register_buffers=None
   if stmt.dst_layout is not None: raise NotImplementedError("tile copy layouts are not supported yet")
   saw_effect[0] = True
 
-def validate_tile_mma(stmt, buffers, saw_effect, buffer_spaces=None):
+def validate_tile_mma(stmt, buffers, saw_effect, buffer_spaces=None, buffer_dtypes=None):
   if stmt.a not in buffers: raise ValueError(f"unknown buffer: {stmt.a}")
   if stmt.b not in buffers: raise ValueError(f"unknown buffer: {stmt.b}")
   if stmt.c not in buffers: raise ValueError(f"unknown buffer: {stmt.c}")
@@ -236,20 +236,26 @@ def validate_tile_mma(stmt, buffers, saw_effect, buffer_spaces=None):
     if buffer_spaces.get(stmt.a) != "shared": raise ValueError(f"tile mma A must be shared buffer: {stmt.a}")
     if buffer_spaces.get(stmt.b) != "shared": raise ValueError(f"tile mma B must be shared buffer: {stmt.b}")
     if buffer_spaces.get(stmt.c) != "register": raise ValueError(f"tile mma C must be register buffer: {stmt.c}")
+  if buffer_dtypes is not None:
+    dtypes = (buffer_dtypes.get(stmt.a), buffer_dtypes.get(stmt.b), buffer_dtypes.get(stmt.c))
+    if any(dtype is None for dtype in dtypes):
+      raise ValueError(f"tile mma operands require known dtypes: A={stmt.a} B={stmt.b} C={stmt.c}")
+    if dtypes != ("float32", "float32", "float32"):
+      raise NotImplementedError(f"tile mma only supports float32 operands for MVP: A={dtypes[0]} B={dtypes[1]} C={dtypes[2]}")
   saw_effect[0] = True
 
-def _validate_tile_copies_in_range(op, buffers, indices, register_buffers, fragments, buffer_spaces):
+def _validate_tile_copies_in_range(op, buffers, indices, register_buffers, fragments, buffer_spaces, buffer_dtypes):
   validate_shape(op.extent, buffers)
   if op.name in indices: raise ValueError(f"duplicate range variable: {op.name}")
   if op.axis not in VALID_RANGE_AXES: raise ValueError(f"unknown range axis: {op.axis}")
   indices = indices | {op.name}
   for stmt in op.body:
     if isinstance(stmt, Range):
-      _validate_tile_copies_in_range(stmt, buffers, indices, register_buffers, fragments, buffer_spaces)
+      _validate_tile_copies_in_range(stmt, buffers, indices, register_buffers, fragments, buffer_spaces, buffer_dtypes)
     elif isinstance(stmt, TileCopy):
       validate_tile_copy(stmt, buffers, indices, [False], register_buffers, fragments)
     elif isinstance(stmt, TileMMA):
-      validate_tile_mma(stmt, buffers, [False], buffer_spaces)
+      validate_tile_mma(stmt, buffers, [False], buffer_spaces, buffer_dtypes)
 
 def validate_tile_copies(kernel):
   if not isinstance(kernel, Kernel): raise TypeError(f"expected Kernel, got {type(kernel).__name__}")
@@ -257,6 +263,7 @@ def validate_tile_copies(kernel):
   register_buffers = set()
   fragments = {}
   buffer_spaces = {arg.name: "global" for arg in kernel.args}
+  buffer_dtypes = {}
   for arg in kernel.args:
     if arg.name in buffers: raise ValueError(f"duplicate arg name: {arg.name}")
     buffers.add(arg.name)
@@ -267,6 +274,7 @@ def validate_tile_copies(kernel):
       validate_shape(op.shape, buffers)
       buffers.add(op.name)
       buffer_spaces[op.name] = op.space
+      buffer_dtypes[op.name] = op.dtype
       if op.space == "register": register_buffers.add(op.name)
     elif isinstance(op, FragmentAlloc):
       if op.name in buffers: raise ValueError(f"duplicate buffer name: {op.name}")
@@ -274,14 +282,15 @@ def validate_tile_copies(kernel):
       buffers.add(op.name)
       fragments[op.name] = op
       buffer_spaces[op.name] = "fragment"
+      buffer_dtypes[op.name] = op.dtype
     elif isinstance(op, Range):
-      _validate_tile_copies_in_range(op, buffers, set(), register_buffers, fragments, buffer_spaces)
+      _validate_tile_copies_in_range(op, buffers, set(), register_buffers, fragments, buffer_spaces, buffer_dtypes)
     elif isinstance(op, TileCopy):
       validate_tile_copy(op, buffers, set(), [False], register_buffers, fragments)
     elif isinstance(op, TileMMA):
-      validate_tile_mma(op, buffers, [False], buffer_spaces)
+      validate_tile_mma(op, buffers, [False], buffer_spaces, buffer_dtypes)
 
-def validate_range(op, buffers, indices, saw_effect, register_buffers=None, fragments=None):
+def validate_range(op, buffers, indices, saw_effect, register_buffers=None, fragments=None, buffer_spaces=None, buffer_dtypes=None):
   validate_shape(op.extent, buffers)
   if op.name in indices: raise ValueError(f"duplicate range variable: {op.name}")
   if op.axis not in VALID_RANGE_AXES: raise ValueError(f"unknown range axis: {op.axis}")
@@ -295,13 +304,13 @@ def validate_range(op, buffers, indices, saw_effect, register_buffers=None, frag
       validate_store(stmt, buffers, indices, register_buffers, fragments)
       saw_effect[0] = True
     elif isinstance(stmt, Range): 
-      validate_range(stmt, buffers, indices, saw_effect, register_buffers, fragments)
+      validate_range(stmt, buffers, indices, saw_effect, register_buffers, fragments, buffer_spaces, buffer_dtypes)
     elif isinstance(stmt, (FragmentClear, FragmentGemm, FragmentStore)):
       validate_fragment_stmt(stmt, buffers, indices, saw_effect, register_buffers, fragments)
     elif isinstance(stmt, TileCopy):
       validate_tile_copy(stmt, buffers, indices, saw_effect, register_buffers, fragments)
     elif isinstance(stmt, TileMMA):
-      validate_tile_mma(stmt, buffers, saw_effect)
+      validate_tile_mma(stmt, buffers, saw_effect, buffer_spaces, buffer_dtypes)
     elif isinstance(stmt, Barrier):
       if not saw_effect[0]: raise ValueError("barrier requires a previous effect")
       saw_effect[0] = True
@@ -313,6 +322,7 @@ def validate_kernel(kernel):
   register_buffers = set()
   fragments = {}
   buffer_spaces = {arg.name: "global" for arg in kernel.args}
+  buffer_dtypes = {}
   for arg in kernel.args:
     if arg.name in buffers: raise ValueError(f"duplicate arg name: {arg.name}")
     buffers.add(arg.name)
@@ -324,6 +334,7 @@ def validate_kernel(kernel):
       validate_shape(op.shape, buffers)
       buffers.add(op.name)
       buffer_spaces[op.name] = op.space
+      buffer_dtypes[op.name] = op.dtype
       if op.space == "register": register_buffers.add(op.name)
     elif isinstance(op, FragmentAlloc):
       if op.name in buffers: raise ValueError(f"duplicate buffer name: {op.name}")
@@ -331,6 +342,7 @@ def validate_kernel(kernel):
       buffers.add(op.name)
       fragments[op.name] = op
       buffer_spaces[op.name] = "fragment"
+      buffer_dtypes[op.name] = op.dtype
     elif isinstance(op, SetIf):
       validate_expr(op.cond, buffers, set(), register_buffers, fragments)
       validate_store(op, buffers, set(), register_buffers, fragments)
@@ -346,13 +358,13 @@ def validate_kernel(kernel):
       validate_store(op, buffers, set(), register_buffers, fragments)
       saw_effect[0] = True
     elif isinstance(op, Range):
-      validate_range(op, buffers, set(), saw_effect, register_buffers, fragments)
+      validate_range(op, buffers, set(), saw_effect, register_buffers, fragments, buffer_spaces, buffer_dtypes)
     elif isinstance(op, (FragmentClear, FragmentGemm, FragmentStore)):
       validate_fragment_stmt(op, buffers, set(), saw_effect, register_buffers, fragments)
     elif isinstance(op, TileCopy):
       validate_tile_copy(op, buffers, set(), saw_effect, register_buffers, fragments)
     elif isinstance(op, TileMMA):
-      validate_tile_mma(op, buffers, saw_effect, buffer_spaces)
+      validate_tile_mma(op, buffers, saw_effect, buffer_spaces, buffer_dtypes)
     elif isinstance(op, Barrier):
       if not saw_effect[0]: raise ValueError("barrier requires a previous effect")
       saw_effect[0] = True

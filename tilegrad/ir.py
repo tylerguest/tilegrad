@@ -24,16 +24,13 @@ class Stmt: pass
 class KernelOp: pass
 
 @dataclass(frozen=True)
-class Arg:
-  name: str
+class Arg: name: str
 
 @dataclass(frozen=True)
-class Const(Expr):
-  value: int | float
+class Const(Expr): value: int | float
 
 @dataclass(frozen=True)
-class Var(Expr):
-  name: str
+class Var(Expr): name: str
 
 @dataclass(frozen=True)
 class BinaryExpr(Expr):
@@ -65,8 +62,7 @@ class And(BinaryExpr): pass
 class Or(BinaryExpr): pass
 
 @dataclass(frozen=True)
-class Not(Expr):
-  x: object
+class Not(Expr): x: object
 
 @dataclass(frozen=True)
 class Add(BinaryExpr): pass
@@ -133,8 +129,7 @@ class FragmentAlloc(KernelOp):
   dtype: str
 
 @dataclass(frozen=True)
-class FragmentClear(Stmt):
-  buffer: str
+class FragmentClear(Stmt): buffer: str
 
 @dataclass(frozen=True)
 class FragmentGemm(Stmt):

@@ -166,7 +166,7 @@ def main():
       "tilegrad.tiled_gemm",
       M, N, K,
       tilegrad_fn,
-      launch=f"grid=({ceildiv(M, BM)},{ceildiv(N, BN)}) threads=({BM},{BN})",
+      launch=f"grid=({ceildiv(M, BM)},{ceildiv(N, BN)}) threads=(1)",
     ))
 
     if (M, N, K) in FRAGMENT_SIZES:
