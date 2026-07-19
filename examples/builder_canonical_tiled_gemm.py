@@ -1,7 +1,7 @@
 from tinygrad import Tensor
 from tilegrad import run
 from tilegrad.debug import inspect_kernel
-from tilegrad.ir import Range, TileCopy, TileMMA
+from tilegrad.ir import Range
 from tilegrad.kernels import tiled_gemm
 
 M = 3
@@ -13,7 +13,6 @@ BK = 3
 
 k = tiled_gemm(M, N, K, BM, BN, BK)
 
-
 def ref_matmul(a, b, m, n, k_dim):
   return [
     sum(a[i * k_dim + kk] * b[kk * n + j] for kk in range(k_dim))
@@ -21,13 +20,13 @@ def ref_matmul(a, b, m, n, k_dim):
     for j in range(n)
   ]
 
-
-def has_op(body, op_type):
+def range_axes(body):
+  axes = set()
   for op in body:
-    if isinstance(op, op_type): return True
-    if isinstance(op, Range) and has_op(op.body, op_type): return True
-  return False
-
+    if isinstance(op, Range):
+      axes.add(op.axis)
+      axes.update(range_axes(op.body))
+  return axes
 
 if __name__ == "__main__":
   a_vals = [
@@ -47,8 +46,7 @@ if __name__ == "__main__":
   out_t = Tensor.empty(M * N)
   out = run(k, out_t, a_t, b_t).tolist()
   expected = ref_matmul(a_vals, b_vals, M, N, K)
-  if out != expected:
-    raise AssertionError(f"canonical tiled GEMM mismatch: got={out} expected={expected}")
+  if out != expected: raise AssertionError(f"canonical tiled GEMM mismatch: got={out} expected={expected}")
 
   dbg = inspect_kernel(k)
   print("Result:")
@@ -56,7 +54,4 @@ if __name__ == "__main__":
   print("Matches reference:", out == expected)
   print("TileGrad IR stages:")
   print([stage.name for stage in dbg.stages])
-  print("tile_ir has TileCopy:", has_op(dbg.tile_ir.body, TileCopy))
-  print("tile_ir has TileMMA:", has_op(dbg.tile_ir.body, TileMMA))
-  print("scalar_ir has TileCopy:", has_op(dbg.scalar_ir.body, TileCopy))
-  print("scalar_ir has TileMMA:", has_op(dbg.scalar_ir.body, TileMMA))
+  print("tile_ir execution axes:", sorted(range_axes(dbg.tile_ir.body)))

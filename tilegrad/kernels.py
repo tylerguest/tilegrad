@@ -1,7 +1,17 @@
 from tilegrad.builder import KernelBuilder
 from tilegrad.utils import ceildiv
 
-def tiled_gemm(M, N, K, BM=2, BN=2, BK=3):
+def tiled_gemm(M, N, K, BM=16, BN=64, BK=32):
+  for name, value in (("M", M), ("N", N), ("K", K), ("BM", BM), ("BN", BN), ("BK", BK)):
+    if not isinstance(value, int) or value <= 0: raise ValueError(f"{name} must be a positive integer")
+
+  TM = 2 if BM % 2 == 0 else 1
+  TN = 2 if BN % 2 == 0 else 1
+  THREAD_ROWS = BM // TM
+  THREAD_COLS = BN // TN
+  THREADS = THREAD_ROWS * THREAD_COLS
+  if THREADS > 1024: raise ValueError(f"tiled_gemm requires at most 1024 threads per block, got {THREADS}")
+
   k = KernelBuilder("tilegrad_tiled_gemm", ("out", "a", "b"))
   KTILES = ceildiv(K, BK)
 
@@ -11,21 +21,47 @@ def tiled_gemm(M, N, K, BM=2, BN=2, BK=3):
 
   as_tile = k.shared("as", shape=(BM, BK), dtype="float32")
   bs_tile = k.shared("bs", shape=(BK, BN), dtype="float32")
-  acc = k.register("acc", shape=(BM, BN), dtype="float32")
+  acc = k.register("acc", shape=(TM, TN), dtype="float32")
 
   with k.grid(ceildiv(M, BM), ceildiv(N, BN)) as (bi, bj):
-    with k.threads(1) as _:
+    # Keep output columns on threadIdx.x so warp loads and stores are contiguous.
+    with k.threads(THREAD_COLS, THREAD_ROWS) as (tj, ti):
+      row = bi * BM + ti * TM
+      col = bj * BN + tj * TN
+      tid = ti * THREAD_COLS + tj
       k.clear(acc)
+
       for ko in range(KTILES):
-        k.copy(a.tile(origin=(bi * BM, ko * BK), shape=(BM, BK), bounds=(M, K)), as_tile.tile(),)
-        k.copy(b.tile(origin=(ko * BK, bj * BN), shape=(BK, BN), bounds=(K, N)), bs_tile.tile(),)
+        for load in range(ceildiv(BM * BK, THREADS)):
+          idx = tid + load * THREADS
+          ai = idx // BK
+          ak = idx % BK
+          g_row = bi * BM + ai
+          g_k = ko * BK + ak
+          valid = (idx < BM * BK) & (g_row < M) & (g_k < K)
+          k.store_if(idx < BM * BK, as_tile, (ai, ak), k.load_if(valid, a, (g_row, g_k)))
+
+        for load in range(ceildiv(BK * BN, THREADS)):
+          idx = tid + load * THREADS
+          bk = idx // BN
+          bj_local = idx % BN
+          g_k = ko * BK + bk
+          g_col = bj * BN + bj_local
+          valid = (idx < BK * BN) & (g_k < K) & (g_col < N)
+          k.store_if(idx < BK * BN, bs_tile, (bk, bj_local), k.load_if(valid, b, (g_k, g_col)))
+
         k.barrier()
-        k.gemm(as_tile, bs_tile, acc)
-      for i in range(BM):
-        for j in range(BN):
-          row = bi * BM + i
-          col = bj * BN + j
-          k.store_if((row < M) & (col < N), out, (row, col), acc[i, j])
+        for mi in range(TM):
+          for nj in range(TN):
+            with k.range(f"kk_{mi}_{nj}", BK, axis="reduce") as kk:
+              acc[mi, nj] = acc[mi, nj] + as_tile[ti * TM + mi, kk] * bs_tile[kk, tj * TN + nj]
+        k.barrier()
+
+      for mi in range(TM):
+        for nj in range(TN):
+          out_row = row + mi
+          out_col = col + nj
+          k.store_if((out_row < M) & (out_col < N), out, (out_row, out_col), acc[mi, nj])
   return k
 
 def fragment_gemm(M, N, K, BM=8, BN=8, BK=8):

@@ -203,6 +203,12 @@ def lower_set(stmt, env, updated_buffers, local_updated, shared_read_effects, in
   updated_buffers.add(stmt.buffer)
   local_updated.add(stmt.buffer)
 
+def close_register_scope(buf, rng, numel):
+  flat = buf.flatten()
+  stores = tuple(flat[i].store(flat[i]) for i in range(numel))
+  effect = tg.group_uops(*stores) if len(stores) > 1 else stores[0]
+  return flat.after(effect.end(rng))
+
 def lower_range(op, env, effects, sink_effects, buffer_effects, pending_shared, store_state, shared_read_effects, updated_buffers, indices, range_slots, register_scopes, register_numels, active_ranges=()):
   axis_type = AXIS_TYPES[op.axis]
   i = tg.range_uop(lower_shape(op.extent, env), range_slots[0], axis_type)
@@ -227,8 +233,7 @@ def lower_range(op, env, effects, sink_effects, buffer_effects, pending_shared, 
         if scope and scope[-1] is i:
           if i in buf.ranges:
             if name not in register_numels: raise RuntimeError(f"missing register size for {name}")
-            target = buf.flatten()[0]
-            env[name] = target.set(target, end=i)
+            env[name] = close_register_scope(buf, i, register_numels[name])
           register_scopes[name] = scope[:-1]
       else:
         env[name] = buf.end(i)
@@ -251,7 +256,12 @@ def lower_alloc(op, env, shared_slots, register_slots, register_numels):
   env[op.name] = tg.placeholder((numel,), lower_dtype(op.dtype), slot, addrspace)
 
 def lower_barrier(env, effects, buffer_effects, pending_shared, active_ranges=()):
-  if not effects and not pending_shared: raise ValueError("barrier requires a previous effect")
+  register_effects = []
+  for buf in env.values():
+    if buf.addrspace is not tg.AddrSpace.REG: continue
+    for dep in _after_deps(buf):
+      if dep not in register_effects: register_effects.append(dep)
+  if not effects and not pending_shared and not register_effects: raise ValueError("barrier requires a previous effect")
   if pending_shared:
     stores = [s for s, _ in pending_shared]
     rngs = []
@@ -260,9 +270,9 @@ def lower_barrier(env, effects, buffer_effects, pending_shared, active_ranges=()
         if x not in rngs and x not in active_ranges: rngs.append(x)
     grouped = tg.group_uops(*stores) if len(stores) > 1 else stores[0]
     if rngs: grouped = grouped.end(*rngs)
-    barrier_srcs = [grouped] + list(effects)
+    barrier_srcs = [grouped] + list(effects) + register_effects
   else:
-    barrier_srcs = list(effects)
+    barrier_srcs = list(effects) + register_effects
   bar = tg.barrier_uops(*barrier_srcs)
   effects.clear()
   effects.append(bar)

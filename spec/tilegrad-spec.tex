@@ -1,0 +1,948 @@
+\documentclass[10pt,letterpaper]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[margin=0.72in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{array}
+\usepackage{booktabs}
+\usepackage[dvipsnames]{xcolor}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{longtable}
+\usepackage{tabularx}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=MidnightBlue,
+  urlcolor=MidnightBlue,
+  pdftitle={TileGrad: a typed tile language over tinygrad UOps},
+}
+
+\lstset{
+  language=Python,
+  basicstyle=\ttfamily\small,
+  columns=fullflexible,
+  keepspaces=true,
+  frame=single,
+  framerule=0.2pt,
+  xleftmargin=0.4em,
+  xrightmargin=0.4em,
+  aboveskip=0.5em,
+  belowskip=0.5em,
+}
+
+\setlist[itemize]{leftmargin=1.5em,itemsep=1pt,topsep=3pt}
+\setlist[enumerate]{leftmargin=1.7em,itemsep=1pt,topsep=3pt}
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+\newcommand{\TileGrad}{\textsc{TileGrad}}
+\newcommand{\tinygrad}{\textsc{tinygrad}}
+\newcommand{\op}[1]{\textsc{#1}}
+\newcommand{\must}{\textbf{MUST}}
+\newcommand{\mustnot}{\textbf{MUST NOT}}
+\newcommand{\should}{\textbf{SHOULD}}
+\newcommand{\may}{\textbf{MAY}}
+
+\title{\TileGrad: a typed tile language over \tinygrad{} UOps\\
+\large Version 1 target specification}
+\author{TileGrad contributors}
+\date{July 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\TileGrad{} is a statically scheduled, Python-embedded language for tiled
+compute kernels.  Programs expose tile shapes, memory placement, launch shape,
+and coarse scheduling intent while the compiler owns lane-level distribution,
+synchronization, and legal instruction selection.  \TileGrad{} lowers into
+\tinygrad{} UOps and delegates backend code generation, compilation, and
+runtime execution to \tinygrad{}.
+
+This document specifies the intended stable Version 1 language.  It is a
+north-star contract rather than a description of the current experimental
+implementation.  A conforming implementation may initially use scalar or SIMT
+fallbacks for every tile operation.  Optimized copy, matrix, and pipeline
+lowerings must preserve the same semantics.
+\end{abstract}
+
+\tableofcontents
+
+\section{Status and Conformance}
+
+The key words \must, \mustnot, \should, and \may{} describe normative
+requirements.  Text marked ``non-normative'' provides rationale or examples.
+
+A \emph{program} conforms when it uses only constructs defined by this
+specification and satisfies all static validity rules.  An
+\emph{implementation} conforms when it accepts every program required by its
+declared profile, rejects invalid programs before device execution, and
+preserves the observable semantics in this document.
+
+Performance is not part of semantic conformance.  In particular, vectorized
+loads, native matrix instructions, asynchronous transfers, physical pipeline
+overlap, occupancy, and instruction counts are not guaranteed unless an
+explicit capability is requested.
+
+\subsection{Design goals}
+
+\begin{itemize}
+  \item Make tiled kernels substantially easier to express than raw custom
+        \tinygrad{} UOps.
+  \item Keep tile shape, memory placement, launch shape, and coarse scheduling
+        visible in source and debug IR.
+  \item Provide one correctness path whose meaning is independent of target
+        instruction selection.
+  \item Permit optimized lowering without changing source-level semantics.
+  \item Keep the compiler boundary small: \TileGrad{} owns the typed tile IR;
+        \tinygrad{} owns UOps, rendering, compilation, and runtime execution.
+\end{itemize}
+
+\subsection{Non-goals}
+
+Version 1 does not standardize automatic schedule search, autotuning, arbitrary
+layout functions, TileLang or TVM compatibility, backend source injection,
+clusters, tensor memory, TMA, WGMMA, TCGEN05, user-managed asynchronous copy,
+wait groups, warp specialization, scans, atomics, or implicit autograd.
+
+\section{Compilation Model}
+
+A source program passes through the following conceptual stages:
+
+\begin{center}
+\begin{tabularx}{\textwidth}{@{}lY@{}}
+\toprule
+\textbf{Stage} & \textbf{Responsibility} \\
+\midrule
+Specialize & Bind compile-time constants and tensor shape constants. \\
+Parse & Convert the supported Python subset into source-located typed IR. \\
+Verify & Check types, shapes, effects, access modes, uniformity, and resource rules. \\
+Normalize views & Rewrite every view to a base buffer, offset, shape, and strides. \\
+Legalize layouts & Select a canonical logical-parallel and fragment ownership layout. \\
+Plan effects & Insert or validate dependencies and synchronization for managed memory. \\
+Legalize tile ops & Select scalar/SIMT lowering or an exact available capability. \\
+Lower & Emit scalar, vector, range, memory, barrier, and optional \op{Wmma} UOps. \\
+Verify UOps & Apply the relevant \tinygrad{} UOp program specification. \\
+Execute & Delegate rendering, compilation, launch, and storage to \tinygrad{}. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Each stage \must{} be inspectable.  At minimum, implementations expose the
+parsed tile IR, verified tile IR, legalized tile IR, scalar/SIMT IR, and final
+UOps.  A native operation selected during legalization must remain identifiable
+in debug output.
+
+\section{Python Frontend}
+
+The canonical frontend is a Python decorator named
+\texttt{@tilegrad.jit}.  It has one explicit behavior: calling a decorated
+function specializes, compiles, caches, and executes a \TileGrad{} program.
+An implementation \mustnot{} infer a different eager or lazy API from the
+function body or return type.
+
+\subsection{Supported source structure}
+
+A decorated function consists of:
+
+\begin{enumerate}
+  \item runtime tensor and scalar parameters;
+  \item keyword-only compile-time parameters annotated \texttt{T.Const};
+  \item tensor shape declarations and output declarations;
+  \item exactly one \texttt{with T.Kernel(...)} launch region;
+  \item zero or more compile-time helper or macro expansions; and
+  \item a return of every declared output, preserving tuple order.
+\end{enumerate}
+
+Each runtime tensor parameter must have exactly one annotated declaration of
+the following form before its first use:
+\begin{lstlisting}
+name: T.Tensor[(shape...), dtype]
+\end{lstlisting}
+\texttt{T.const("M", ...)} declares named specialization symbols.  Every such
+symbol must occur directly as one dimension in at least one input tensor
+declaration.  At specialization, direct occurrences bind the symbol to the
+corresponding runtime dimension; repeated occurrences must agree.  An
+unbound symbol or conflicting dimensions are specialization errors.  Output
+declarations do not bind symbols.
+
+A runtime scalar parameter has an annotation \texttt{T.Scalar[dtype]}.  At the
+current \tinygrad{} boundary it is represented by a dense rank-zero tensor
+input and loaded once inside the kernel.  It cannot affect launch dimensions.
+Compile-time helper functions execute during specialization.  Device macros
+must be marked \texttt{@T.macro}, are non-recursive, and are inlined into the
+typed IR before verification.
+
+The device subset includes scalar assignments, tuple unpacking, calls to
+specified \TileGrad{} operations, \texttt{for} over \TileGrad{} loop
+constructs, structured \texttt{if}/\texttt{else}, a kernel launch
+\texttt{with} statement, and a final return.  Python classes, recursion,
+generators, exceptions, arbitrary iteration, \texttt{while}, \texttt{break},
+and \texttt{continue} are outside Version 1.
+
+Ordinary Python control flow may inspect only compile-time values.  A condition
+depending on a device value creates device control flow.  A frontend
+\mustnot{} coerce a device predicate to a Python boolean.
+
+\subsection{Canonical program}
+
+The following spelling is normative for the Version 1 decorator frontend.
+
+\begin{lstlisting}
+@tilegrad.jit
+def matmul(A, B, *,
+           BM: T.Const[int] = 64,
+           BN: T.Const[int] = 64,
+           BK: T.Const[int] = 32):
+  M, N, K = T.const("M", "N", "K")
+  A: T.Tensor[(M, K), T.float16]
+  B: T.Tensor[(K, N), T.float16]
+  C = T.empty((M, N), T.float16)
+
+  with T.Kernel(T.ceildiv(N, BN), T.ceildiv(M, BM),
+                threads=128) as (bx, by):
+    A_shared = T.shared((BM, BK), T.float16)
+    B_shared = T.shared((BK, BN), T.float16)
+    accum = T.fragment((BM, BN), T.float32)
+    T.clear(accum)
+
+    for ko in T.Pipelined(T.ceildiv(K, BK), stages=3):
+      T.copy(A.tile((by*BM, ko*BK), (BM, BK)),
+             A_shared, pad=0)
+      T.copy(B.tile((ko*BK, bx*BN), (BK, BN)),
+             B_shared, pad=0)
+      T.mma(A_shared, B_shared, accum)
+
+    T.copy(accum, C.tile((by*BM, bx*BN), (BM, BN)))
+  return C
+\end{lstlisting}
+
+\subsection{Normative API surface}
+
+Version 1 implementations must accept the following source constructs.  Shape,
+dtype, and integer arguments below are typed expressions subject to the static
+rules in this document.
+
+\begin{longtable}{@{}>{\raggedright\arraybackslash}p{6.3cm}>{\raggedright\arraybackslash}p{9.3cm}@{}}
+\toprule
+\textbf{Source form} & \textbf{Result or effect} \\
+\midrule
+\endhead
+\texttt{T.const(*names)} & Declare specialization symbols; return one symbol
+for one name and a tuple in argument order for multiple names. \\
+\texttt{x: T.Tensor[(shape...), dtype]} & Declare the type of runtime tensor
+parameter \texttt{x}. \\
+\texttt{x: T.Scalar[dtype]} & Declare a runtime rank-zero scalar parameter. \\
+\texttt{T.empty(shape, dtype)} & Declare and return a new global output tensor. \\
+\texttt{T.shared(shape, dtype, sync="managed")} & Allocate workgroup shared
+storage with managed or manual synchronization. \\
+\texttt{T.fragment(shape, dtype, policy="auto")} & Allocate a collective
+fragment using auto, row-major, or column-major policy. \\
+\texttt{T.private(shape, dtype)} & Allocate private, statically indexed storage. \\
+\texttt{V.tile(origin, shape)} & Create a possibly out-of-base tile view with
+the same rank as \texttt{V}. \\
+\texttt{V.subview(origin, shape)} & Create a view that must be provably within
+the logical extent of \texttt{V}. \\
+\texttt{V.transpose(order)} & Permute shape and strides by a rank permutation. \\
+\texttt{V.reshape(shape)} & Create an equal-element-count view when contiguity
+is proven. \\
+\texttt{T.Kernel(*grid, threads=...)} & Enter the single launch region and
+yield grid coordinates in dimension order. \\
+\texttt{T.Serial(stop)} or \texttt{T.Serial(start, stop, step=1)} & Construct
+an ordered half-open loop. \\
+\texttt{T.Unroll(stop)} or \texttt{T.Unroll(start, stop, step=1)} & Construct
+a compile-time-bounded loop requested to unroll. \\
+\texttt{T.Reduce(stop)} or \texttt{T.Reduce(start, stop, step=1)} & Construct
+an ordered scalar recurrence loop represented by a reduction axis. \\
+\texttt{T.Parallel(*extents, policy="auto")} & Construct a logical Cartesian
+parallel loop and yield one coordinate per extent. \\
+\texttt{T.Pipelined(stop, stages=N)} or
+\texttt{T.Pipelined(start, stop, stages=N)} & Construct a unit-step loop with
+serial semantics and positive compile-time pipeline hint \texttt{N}. \\
+\bottomrule
+\end{longtable}
+
+The scalar and tile operation forms are:
+
+\begin{longtable}{@{}>{\raggedright\arraybackslash}p{6.3cm}>{\raggedright\arraybackslash}p{9.3cm}@{}}
+\toprule
+\textbf{Source form} & \textbf{Result or effect} \\
+\midrule
+\endhead
+\texttt{T.load(V, indices, mask=True, other=0)} & Perform the scalar load
+defined in Section~\ref{sec:scalar-memory}; \texttt{indices} is a scalar for
+rank one and a tuple otherwise. \\
+\texttt{T.store(V, indices, value, mask=True)} & Perform the scalar store
+defined in Section~\ref{sec:scalar-memory}. \\
+\texttt{V[indices]} and \texttt{V[indices] = value} & Abbreviate unmasked
+\texttt{T.load} and \texttt{T.store}; fragment indexing is legal only in a
+matching \texttt{T.Parallel}. \\
+\texttt{T.fill(dst, value)} and \texttt{T.clear(dst)} & Fill a collective
+destination with a scalar, or with zero. \\
+\texttt{T.copy(src, dst, pad=0)} & Perform equal-shape synchronous copy. \\
+\texttt{T.mma(A, B, C, transpose\_a=False, transpose\_b=False, mode="auto")}
+& Accumulate a rank-two matrix product into \texttt{C}; mode is
+\texttt{auto}, \texttt{simt}, or a versioned capability name. \\
+\texttt{T.reduce(src, axis, op, accumulator\_dtype=None, keepdim=False,
+initial=None, nan\_policy="propagate")} & Return a fresh fragment reduced by
+\texttt{sum}, \texttt{max}, or \texttt{min}; omitted accumulator dtype means
+the source dtype. \\
+\texttt{T.reduce\_sum}, \texttt{T.reduce\_max}, \texttt{T.reduce\_min} &
+Aliases fixing the corresponding \texttt{op} argument of \texttt{T.reduce}. \\
+\texttt{T.where(predicate, x, y)} and \texttt{T.cast(x, dtype)} & Scalar or
+pointwise lifted fragment select and conversion. \\
+\texttt{T.thread\_id(dim)} and \texttt{T.thread\_extent(dim)} & Return expert
+local-agent coordinates and extents. \\
+\texttt{T.barrier()} & Perform the convergent workgroup barrier. \\
+\bottomrule
+\end{longtable}
+
+Arithmetic, comparison, logical, and math operations automatically lift to
+fragments and create the fragment-map nodes defined below.  Scalar-to-fragment
+and compatible fragment-to-fragment broadcasting follows the Version 1
+broadcast rule.  Rebinding a fragment name or assigning its logical coordinates
+creates a new fragment version in typed IR.
+
+\section{Parameters, Shapes, and Outputs}
+
+\subsection{Value categories}
+
+\begin{center}
+\begin{tabularx}{\textwidth}{@{}lYY@{}}
+\toprule
+\textbf{Category} & \textbf{Meaning} & \textbf{Permitted uses} \\
+\midrule
+Compile-time constant & Included in the specialization cache key. & Python
+control flow, tile and allocation shapes, workgroup shape, layouts, unrolling,
+and all device expressions. \\
+Tensor shape constant & Inferred from a runtime tensor, then specialized. &
+Grid extents, output shapes, bounds, and device expressions. \\
+Runtime scalar & Passed to the device program without specialization. & Device
+expressions, predicates, indices, and loop bounds; not launch, allocation,
+fragment, layout, unroll, or workgroup shapes. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Tensor rank and dtype are always specialization-time information.  Version 1
+specializes tensor dimensions by default.  Implementations may later declare a
+shape-polymorphic extension, but it must not weaken the rules for static shared
+or fragment storage.
+
+\subsection{Outputs}
+
+\texttt{T.empty(shape, dtype)} declares a dense, contiguous global output.  It
+does not allocate device-local storage inside the kernel.  Frontend lowering
+creates an output specification and the host wrapper allocates the tensor
+before invoking \tinygrad{} custom-kernel execution.
+
+Every output \must{} be returned exactly once.  Only declared outputs may be
+returned.  Output shape expressions may depend on input shape constants and
+compile-time constants.  Multiple outputs are returned as a tuple in source
+order.  Outputs must not alias inputs or one another.  Scalar device results
+are represented as rank-zero or one-element output tensors, not Python values.
+
+Runtime tensor inputs are read-only in the core profile.  A future in-place
+extension must make read/write access explicit and must define aliasing.
+
+\section{Scalar Types and Expressions}
+
+Core scalar types are \texttt{bool}, signed and unsigned 8-, 16-, 32-, and
+64-bit integers, \texttt{float16}, \texttt{bfloat16}, and
+\texttt{float32}.  An implementation may expose additional \tinygrad{} dtypes
+through declared capabilities.
+
+Expressions are statically typed.  Implicit conversion is limited to a Python
+literal converted to the unambiguous type required by its context.  All other
+dtype changes require \texttt{cast}.  Integer indices use the implementation's
+index type and must not be silently converted from floating point.
+
+\begin{center}
+\begin{tabularx}{\textwidth}{@{}lY@{}}
+\toprule
+\textbf{Class} & \textbf{Operations} \\
+\midrule
+Arithmetic & \texttt{+}, \texttt{-}, \texttt{*}, floating division, integer
+floor division, remainder, negation, minimum, and maximum. \\
+Comparison & \texttt{<}, \texttt{<=}, \texttt{==}, \texttt{!=},
+\texttt{>=}, and \texttt{>}; result dtype is \texttt{bool}. \\
+Logical & elementwise and, or, not, and \texttt{select(predicate, a, b)}. \\
+Conversion & numeric cast and bitcast where equal storage width is proven. \\
+Math & absolute value, reciprocal, square root, \texttt{exp2},
+\texttt{log2}, and sine. \\
+Constants & finite numeric values, positive and negative infinity, and typed
+reduction identities. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\texttt{exp} and \texttt{log} may be frontend compositions over
+\texttt{exp2} and \texttt{log2}.  Floating-point reassociation and reduction
+order are implementation-defined within the numerical contract in
+Section~\ref{sec:numerics}.
+
+\section{Buffers and Views}
+
+A buffer type is the tuple
+\[
+  (\mathrm{dtype},\;\mathrm{rank},\;\mathrm{shape},\;\mathrm{strides},
+    \;\mathrm{address\ space},\;\mathrm{access}).
+\]
+
+Core implementations support ranks zero through four.  They may support higher
+ranks.  External tensors are dense, non-overlapping, and contiguous.  This
+restriction matches the current \tinygrad{} custom-kernel boundary, which may
+materialize non-contiguous input views.
+
+A view is
+\[
+  V = (B,\;o,\;\mathbf{s},\;\mathbf{d},\;n_B),
+\]
+where \(B\) is a base buffer, \(o\) is an element offset,
+\(\mathbf{s}\) is a logical shape, and \(\mathbf{d}\) contains element
+strides.  The base storage contains \(n_B\) elements.  The address of logical
+coordinate \(\mathbf{i}\) is
+\[
+  \mathrm{addr}(V,\mathbf{i}) = o + \sum_k i_k d_k.
+\]
+
+A coordinate is in bounds exactly when
+\[
+  \mathrm{inbounds}(V,\mathbf{i}) \iff
+  \left(\bigwedge_k 0\leq i_k<s_k\right)
+  \land 0\leq\mathrm{addr}(V,\mathbf{i})<n_B.
+\]
+The storage extent is the element count of an external tensor or allocation.
+\texttt{tile(origin, shape)} may intentionally create a logical view extending
+beyond base storage; masked load, store, fill, and copy use the predicate above
+to define edge behavior.
+
+Subview and transpose are view operations and do not copy.  Reshape is valid
+only when contiguity can be proven.  Writable zero-stride views, overlapping
+writable views, and negative strides are invalid in Version 1.
+
+Two views overlap when their sets of valid base-storage addresses intersect.
+Copy between identical views is a no-op.  Every other overlapping source and
+destination copy is invalid; Version 1 does not provide snapshot or
+\texttt{memmove} semantics.  If disjointness cannot be proven, compilation
+must fail.
+
+Negative coordinates are out of bounds; they do not wrap as Python indices.
+Bounds behavior is defined by the operation performing the access.  There is
+no general pass that silently repairs arbitrary out-of-bounds shared or private
+accesses.
+
+\section{Memory Spaces}
+
+\begin{center}
+\begin{tabularx}{\textwidth}{@{}lYYY@{}}
+\toprule
+\textbf{Space} & \textbf{Ownership} & \textbf{Shape} & \textbf{Purpose} \\
+\midrule
+Global & Invocation/tensor & Static rank; specialized dimensions & Inputs and outputs. \\
+Shared & Workgroup & Compile-time constant & Cooperative staging and communication. \\
+Fragment & Workgroup collective & Compile-time constant & Logically shaped values distributed across lanes. \\
+Private & One local agent & Compile-time constant & Scalars and statically indexed register tuples. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Shared, fragment, and private allocations have lexical lifetime inside one
+launch region.  Dynamic shared allocation is outside the core profile.
+Private tuple indexing must become constant after specialization and unrolling;
+otherwise compilation fails rather than silently spilling to another memory
+space.
+
+\section{Execution Model}
+
+A launch is a grid of independent workgroups.  A grid has one to three positive
+specialization-time extents.  A workgroup has one to three positive
+specialization-time local extents or one positive total thread count.  No order
+or implicit synchronization exists between workgroups.
+
+The values yielded by \texttt{T.Kernel} are grid coordinates.  Expert code
+uses \texttt{T.thread\_id(dim)} for a local coordinate and
+\texttt{T.thread\_extent(dim)} for its extent, where \texttt{dim} is
+\(0\), \(1\), or \(2\).
+
+\subsection{Loop forms}
+
+\begin{center}
+\begin{tabularx}{\textwidth}{@{}lY@{}}
+\toprule
+\textbf{Form} & \textbf{Semantics} \\
+\midrule
+Serial & Ordered iterations over a half-open integer interval. \\
+Unroll & Serial semantics with a compile-time request to expand iterations. \\
+Reduce & Ordered recurrence semantics that the lowerer may reassociate when
+allowed by the numerical contract. \\
+Parallel & An unordered logical Cartesian iteration space; every point executes
+exactly once. \\
+Pipelined & Serial logical semantics with a pipeline-depth optimization hint. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection{Logical parallel mapping}
+
+\texttt{T.Parallel} is not an alias for a hardware local axis.  It defines an
+unordered logical iteration space distributed over the current workgroup.  The
+compiler selects from a bounded set of canonical policies.  Let the iteration
+shape be \((e_0,\ldots,e_{r-1})\), let \(P\) be the workgroup size, and let
+\(\ell\in[0,P)\) be the row-major linear local-agent identifier.
+
+\begin{itemize}
+  \item \texttt{row\_major}: use
+        \(q_R(\mathbf{i})=\sum_k i_k\prod_{j>k}e_j\);
+        owner \(q_R\bmod P\), private slot \(\lfloor q_R/P\rfloor\);
+  \item \texttt{column\_major}: use
+        \(q_C(\mathbf{i})=\sum_k i_k\prod_{j<k}e_j\);
+        owner \(q_C\bmod P\), private slot \(\lfloor q_C/P\rfloor\); and
+  \item an internal exact mapping required by a selected native matrix capability.
+\end{itemize}
+
+An agent executes the coordinates whose linearized value is
+\(\ell+tP\) for nonnegative \(t\) while that value is less than
+\(\prod_k e_k\).  This rule covers iteration spaces smaller than, equal to, or
+larger than the workgroup.
+
+The source may request a canonical policy or \texttt{auto}.  \texttt{auto}
+may select only from the specified finite set.  Unsupported or ambiguous
+composition must fail deterministically.  The selected policy \must{} appear
+in legalized debug IR.
+
+If explicit thread identifiers affect the same memory operations as a logical
+parallel loop, the loop policy must be explicit.  An implementation must not
+make observable program behavior depend on an unreported automatic mapping.
+
+\section{Fragments}
+
+A fragment is a statically shaped, workgroup-collective logical value.  Its
+physical register ownership is not observable source state.  Legalization
+assigns each logical coordinate to a canonical lane and private slot, or to an
+exact native matrix fragment layout.
+
+Every fragment carries a resolved mapping policy.  A logical parallel region
+``matches'' a fragment when its extents equal the fragment shape and its
+resolved policy is identical.  Access to coordinate \(\mathbf{i}\) in that
+region is executed only by the owner defined by the mapping formula above.
+All operations produce a new logical fragment version; source versions are read
+before destination writes, including syntactically in-place elementwise forms.
+
+Fragments support:
+
+\begin{itemize}
+  \item fill and clear;
+  \item synchronous copy to and from compatible views;
+  \item elementwise unary, binary, comparison, select, and cast operations;
+  \item rank-compatible scalar and row/column broadcasting;
+  \item axis reductions; and
+  \item matrix multiply-accumulate.
+\end{itemize}
+
+Fragment coordinates may be read or written only by a tile operation or inside
+a matching logical parallel region.  Arbitrary fragment indexing by a runtime
+thread identifier is invalid.  SIMT fallback must implement the same logical
+coordinate ownership; it must not replicate the complete fragment in every
+thread.
+
+\subsection{Fragment elementwise algebra}
+
+\op{MapUnary}\((f,X)\), \op{MapBinary}\((f,X,Y)\),
+\op{Select}\((P,X,Y)\), and \op{Cast}\((T,X)\) apply pointwise and produce a
+fresh fragment.  Operands use right-aligned broadcasting: for each aligned
+axis, extents must be equal or one; a missing leading axis and an extent-one
+axis repeat the same source coordinate.  The result extent is the maximum of
+the aligned extents.  Dtypes follow the scalar expression rules.
+
+Scalar operands are rank-zero fragments for broadcasting purposes.  Row and
+column broadcasting are not special cases: shapes \((M,1)\) and \((1,N)\)
+follow the same rule.  Fragment-to-fragment copy requires equal shapes; use an
+elementwise broadcast operation when expansion is intended.
+
+\section{Loads, Stores, and Effects}\label{sec:scalar-memory}
+
+The scalar memory operations are:
+
+\begin{align*}
+  \op{Load}(V,\mathbf{i},m,a) &=
+    \begin{cases}V[\mathbf{i}] & m\land\mathrm{inbounds}(V,\mathbf{i})\\
+                  a & \text{otherwise,}\end{cases}\\
+  \op{Store}(V,\mathbf{i},x,m) &: \quad
+    V[\mathbf{i}]\leftarrow x\quad\text{iff }m\land\mathrm{inbounds}(V,\mathbf{i}).
+\end{align*}
+
+The mask defaults to true.  The alternate load value defaults to typed zero.
+A value is explicitly cast before storage when source and destination dtypes
+differ.
+
+Effects to the same logical location are ordered by source order unless they
+occur in an unordered parallel region.  Two unordered writes, or an unordered
+read and write without a defined collective or synchronization relation, form
+a data race and are invalid.  Version 1 has no atomic escape from this rule.
+
+\section{Tile Operations}
+
+Tile operations are collective statements with explicit logical read and write
+regions.  They must be reached uniformly by every participating local agent.
+A tile operation in thread-divergent control flow is invalid unless the
+operation explicitly defines predicated collective participation.
+
+\subsection{Fill and clear}
+
+\[
+  \op{Fill}(D,x):\qquad D[\mathbf{i}]\leftarrow
+  \mathrm{cast}_{D.\mathrm{dtype}}(x)
+\]
+for every valid logical coordinate \(\mathbf{i}\) in \(D\).
+\op{Clear}\((D)\) is exactly \op{Fill}\((D,0)\).  Fill never writes outside
+the destination view.
+
+\subsection{Synchronous copy}
+
+For equal-shaped logical regions \(S\) and \(D\),
+\[
+  \op{Copy}(S,D,p):\qquad
+  D[\mathbf{i}]\leftarrow
+  \begin{cases}
+    \mathrm{cast}_{D.\mathrm{dtype}}(S[\mathbf{i}]) &
+      \mathrm{inbounds}(S,\mathbf{i})\\
+    \mathrm{cast}_{D.\mathrm{dtype}}(p) & \text{otherwise}
+  \end{cases}
+\]
+when \(D[\mathbf{i}]\) is in bounds.  An out-of-bounds destination coordinate
+performs no write.
+
+Source and destination shapes must be equal.  Copy does not perform implicit
+broadcasting and does not infer a tile extent from an unrelated operand.
+
+Copy has safe-to-consume semantics: a subsequent dependent high-level tile
+operation observes the completed destination values.  The compiler inserts or
+elides transfer completion and workgroup visibility operations as necessary.
+This guarantee includes ordering before managed shared storage is reused.
+
+The compiler may lower copy with scalar, vector, SIMT-cooperative, or
+target-specific transfer instructions, but instruction choice is not
+observable.  A regular copy never exposes a partially completed asynchronous
+transfer.
+
+\subsection{Matrix multiply-accumulate}
+
+For rank-two operands, \op{Mma} has the mathematical semantics
+\[
+  C \leftarrow C + \mathrm{cast}_{T_{acc}}(\mathrm{op}_A(A))
+                    \times
+                    \mathrm{cast}_{T_{acc}}(\mathrm{op}_B(B)),
+\]
+where each \(\mathrm{op}\) is identity or transpose.  Shapes must satisfy
+\[
+  A:(M,K),\qquad B:(K,N),\qquad C:(M,N)
+\]
+after transpose.  The operation does not implicitly clear \(C\).
+
+Core implementations support float32 SIMT MMA and float16 or bfloat16 inputs
+with float32 accumulation.  Additional dtype pairs are capabilities.
+
+The selection mode is one of:
+
+\begin{itemize}
+  \item \texttt{auto}: use any conforming SIMT or native implementation;
+  \item \texttt{simt}: do not select a native matrix instruction; or
+  \item an exact native capability: require its atom shape, dtypes, participant
+        count, and layout, failing compilation if unavailable.
+\end{itemize}
+
+An exact request must never silently fall back.  \texttt{auto} must preserve
+the same logical fragment and numerical contract whichever path is selected.
+
+An exact native capability declares an atom \((M_a,N_a,K_a)\).  A logical
+MMA may use that capability only when \(M\), \(N\), and \(K\) are integer
+multiples of the corresponding atom dimensions.  The compiler partitions
+\(M\) and \(N\) into disjoint atoms and visits \(K\) atoms in increasing
+logical order.  A global edge is represented by already padded input tiles and
+suppressed output stores; an exact native MMA itself never accesses a partial
+atom.  If these rules cannot be met, an exact request fails and \texttt{auto}
+uses another legal capability or SIMT.
+
+\subsection{Axis reduction}
+
+\op{Reduce}\((X,a,f,T_{acc},k)\) reduces axis \(a\) of \(X\), using
+operation \(f\), accumulator dtype \(T_{acc}\), and keep-dimension flag \(k\).
+Version 1 operations are sum, maximum, and minimum.
+
+The result shape removes axis \(a\) when \(k\) is false and replaces it with
+one when \(k\) is true.  Reduction starts from the operation identity unless
+an explicit initial value is provided.  Values are converted to the accumulator
+dtype before combination.
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Operation} & \textbf{Identity} & \textbf{NaN policy} \\
+\midrule
+sum & typed zero & NaNs propagate \\
+maximum & negative infinity or integer minimum & explicit propagate or ignore \\
+minimum & positive infinity or integer maximum & explicit propagate or ignore \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Maximum and minimum default to \texttt{nan\_policy="propagate"}.  An
+implementation may emulate this policy when a native instruction differs.
+Reduction order is otherwise implementation-defined.
+
+\section{Synchronization and Uniformity}
+
+Managed high-level operations use effect analysis to establish required
+completion and visibility.  The implementation must conservatively preserve:
+
+\begin{itemize}
+  \item read-after-write dependencies;
+  \item write-after-read dependencies before storage reuse;
+  \item write-after-write source order; and
+  \item loop-carried dependencies.
+\end{itemize}
+
+A portable workgroup barrier waits for all local agents and establishes a
+happens-before relation from prior shared writes to subsequent shared reads by
+participants.  Every barrier must be reached convergently by the same
+participant set.  A barrier under a thread-varying conditional is invalid.
+
+Expert code may request
+\texttt{T.shared(shape, dtype, sync="manual")} instead of the default
+\texttt{sync="managed"}.  Managed
+and manual synchronization must not be mixed for one allocation.  Raw shared
+access through explicit thread identifiers is permitted only for manually
+synchronized allocations; the author is then responsible for barriers and
+race freedom.  \texttt{T.barrier()} is the source operation for the portable
+workgroup barrier.  High-level collective copy, fill, reduction, and MMA do not
+accept manually synchronized shared operands in the core profile.
+
+There is no grid-wide barrier in the core profile.
+
+\section{Pipelined Loops}
+
+A pipelined loop has exactly the observable behavior of dependency-respecting
+serial iterations.  Each logical iteration executes once, each effect occurs
+once, and no consumer observes uninitialized or prematurely overwritten
+storage.
+
+The stage count is a positive compile-time optimization hint.  It does not
+guarantee physical overlap, a number of in-flight iterations, a particular
+instruction, a particular number of storage versions, or improved performance.
+Executing the loop serially is semantically conforming.
+
+An optimized implementation may reorder operations, version shared storage,
+and use asynchronous target instructions internally.  It must preserve the
+synchronous copy contract and all loop-carried dependencies.  Manual
+stage/order arrays, transfer tokens, wait groups, and hardware barrier parity
+are not Version 1 source constructs.
+
+\section{Structured Control Flow}
+
+Structured \texttt{if}/\texttt{else} is permitted over a boolean scalar.
+Expression-level selection should be used for simple predication.  Loads and
+stores may carry explicit masks.
+
+A conditional is \emph{workgroup-uniform} when every local agent evaluates the
+same branch.  Collective tile operations and barriers may appear only in
+uniform control flow.  The compiler must prove uniformity from compile-time
+values, grid coordinates, and other known-uniform values, or reject the
+program.  Local thread identifiers and values loaded under thread-varying
+indices are conservatively non-uniform.  Version 1 has no user assertion that
+overrides uniformity analysis.
+
+\section{Numerical Contract}\label{sec:numerics}
+
+Integer addition, subtraction, and multiplication are modulo \(2^w\) for a
+\(w\)-bit dtype.  Comparisons use the dtype's signedness.  Floor division and
+remainder follow mathematical floor division.  Defined programs have a
+nonzero divisor and shift counts in \([0,w)\).  Statically invalid cases must be
+rejected; behavior outside the defined domain is not covered by conformance.
+
+Floating-point elementwise operations follow the selected \tinygrad{} dtype
+and backend within ordinary IEEE-754 expectations.  The compiler may fuse a
+multiply and add, reassociate a reduction, or use a native matrix instruction.
+Consequently, semantic equality is not generally bitwise equality.
+
+Conformance vectors use finite inputs in \([-1,1]\) unless exceptional values
+are the subject of the test.  Integer, boolean, movement, mask, and correctly
+rounded cast tests are exact.  Default floating tolerances are:
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Class} & \textbf{Absolute tolerance} & \textbf{Relative tolerance} \\
+\midrule
+float32 elementwise & \(10^{-6}\) & \(10^{-6}\) \\
+float32 reduction/MMA, length \(R\) & \(10^{-5}\max(1,R)\) & \(10^{-5}\) \\
+float16/bfloat16 output & \(2\cdot10^{-2}\) & \(2\cdot10^{-2}\) \\
+FlashAttention output & \(2\cdot10^{-2}\) & \(2\cdot10^{-2}\) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+A native and SIMT MMA must implement the same mathematical accumulation dtype,
+but may differ in rounding within these limits.  NaNs compare classification
+only because payload and sign may be canonicalized.  Infinity and signed-zero
+tests compare classification and sign exactly.  Selected reduction NaN-policy
+tests compare whether a NaN is present.  Masked-off values must not introduce
+exceptional values beyond the specified alternate or reduction identity.
+
+\section{Capabilities and Failures}
+
+Capabilities describe optional legal lowerings, not alternate language
+semantics.  A capability record includes a stable name, target predicate,
+operand dtypes, accumulator dtype, atom shape, participant count, operand
+scope requirements, and internal fragment layout.
+
+Capability names are namespaced and versioned, for example
+\texttt{tinygrad.cuda.m16n8k16.f16.f32.v1}.  The implementation exposes
+\texttt{tilegrad.capabilities(target)} to enumerate records.  Each record also
+contains the exact \tinygrad{} \op{Wmma} argument schema expected by the
+compatibility adapter.  Renaming or changing the meaning of a record requires
+a new versioned name.
+
+The compiler must distinguish:
+
+\begin{itemize}
+  \item an invalid \TileGrad{} program;
+  \item a valid program unavailable on the selected profile or target;
+  \item a failure to produce valid \tinygrad{} UOps; and
+  \item a backend compilation or runtime failure.
+\end{itemize}
+
+Diagnostics must identify the source construct, expected contract, observed
+types or shapes, and selected target where relevant.  Unsupported exact native
+requests fail during capability legalization, before UOp construction.
+
+\section{Boundary with \tinygrad{}}
+
+\TileGrad{} owns the frontend, typed IR, specialization, views, effects,
+uniformity, canonical logical layouts, synchronization planning, tile
+legalization, SIMT algorithms, and exact native capability adaptation.
+
+\tinygrad{} owns UOp validation and rewriting after legalization, scalar and
+vector rendering, device-specific code generation, compilation, launch,
+storage integration, and outer tensor-graph scheduling.
+
+\TileGrad{} must not depend on \tinygrad{} optimization to recover missing
+memory dependencies, fragment ownership, or synchronization.  Integration
+occurs through one versioned compatibility layer and a tested \tinygrad{}
+revision range.
+
+The core profile has no implicit gradient.  Differentiation through a
+\TileGrad{} kernel must fail clearly unless an explicit backward kernel or VJP
+is registered.
+
+\section{Conformance Profiles}
+
+\subsection{Core profile}
+
+The core profile requires:
+
+\begin{itemize}
+  \item decorator parsing and specialization;
+  \item dense contiguous tensor inputs and one or more outputs;
+  \item one- through three-dimensional grids and workgroups;
+  \item scalar expressions, views, masks, and structured conditionals;
+  \item managed shared storage and canonical logical parallel mapping;
+  \item fragments, fill, clear, copy, sum/max/min reduction, and SIMT MMA;
+  \item serial execution of a semantically pipelined loop when necessary; and
+  \item complete debug IR and final UOp validation.
+\end{itemize}
+
+\subsection{Accelerated profile}
+
+The accelerated profile is additive.  It may provide vectorized copy, native
+matrix capabilities, real software pipelining, asynchronous instructions hidden
+behind synchronous operations, and additional dtypes.  A backend may implement
+some accelerated capabilities without implementing all of them.
+
+\section{Required Conformance Programs}
+
+A release claiming core conformance must test at least:
+
+\begin{enumerate}
+  \item exact and masked one- through four-dimensional copy;
+  \item internal strided subviews and transpose;
+  \item source padding, destination suppression, cross-dtype copy, and rejected
+        overlapping copies;
+  \item one- through three-dimensional grids, canonical ownership mappings,
+        logical parallel loops, and rejected runtime-scalar launch extents;
+  \item uniform and rejected divergent collective operations;
+  \item shared-memory producer/consumer and reuse dependencies;
+  \item fragment unary, binary, broadcast, select, and cast operations;
+  \item sum, maximum, and minimum reductions, including non-power-of-two tails;
+  \item float32 SIMT GEMM with M, N, and K edge tiles;
+  \item float16 and bfloat16 input GEMM with float32 accumulation;
+  \item unavailable exact-native capability failures;
+  \item multiple output allocation and return ordering; and
+  \item small causal and non-causal FlashAttention forward kernels using stable
+        online softmax, edge sequence lengths, reduction, \texttt{exp2}, and
+        two MMA operations.
+\end{enumerate}
+
+The same mathematical cases should run through SIMT and every available native
+capability.  Negative tests are part of conformance, not optional robustness
+tests.
+
+\appendix
+
+\section{Normative IR Summary}
+
+The exact in-memory Python classes are not normative.  A conforming typed IR
+must represent at least the following semantic nodes.
+
+\begin{longtable}{@{}>{\raggedright\arraybackslash}p{3.0cm}>{\raggedright\arraybackslash}p{4.6cm}>{\raggedright\arraybackslash}p{8.0cm}@{}}
+\toprule
+\textbf{Node} & \textbf{Operands} & \textbf{Meaning} \\
+\midrule
+\endhead
+Program & parameters, outputs, launch & One specialized callable program. \\
+Buffer parameter & type, shape, access & Dense external tensor storage. \\
+Scalar parameter & dtype, category & Compile-time or runtime scalar. \\
+Output specification & shape, dtype, order & Host-allocated returned tensor. \\
+View & base, offset, shape, strides, storage extent & Logical region sharing base storage. \\
+Allocate shared & shape, dtype, sync mode & Workgroup-visible storage. \\
+Allocate fragment & shape, dtype & Collective logical register tile. \\
+Allocate private & shape, dtype & Per-agent statically indexed storage. \\
+Kernel launch & grid, workgroup & Grid of independent workgroups. \\
+Serial loop & start, stop, step, body & Ordered iteration. \\
+Unroll loop & static interval, body & Ordered iteration requested to expand. \\
+Reduce loop & interval, recurrence & Scalar recurrence. \\
+Parallel loop & extents, policy, body & Unordered logical iteration. \\
+Pipelined loop & interval, stages, body & Serial semantics with pipeline hint. \\
+Thread index & dimension & Explicit local-agent coordinate or extent. \\
+If & predicate, branches & Structured control flow. \\
+Load & view, coordinate, mask, alternate & Predicated scalar read. \\
+Store & view, coordinate, value, mask & Predicated scalar write. \\
+Fill & destination, scalar & Collective typed fill. \\
+Copy & source, destination, pad & Collective synchronous region copy. \\
+Fragment map & operation, sources, broadcast shape & Pointwise collective fragment operation. \\
+MMA & A, B, C, transpose, mode & Collective accumulating matrix multiply. \\
+Reduce & source, axis, op, dtype, keepdim & Collective axis reduction. \\
+Barrier & memory scope & Convergent workgroup synchronization. \\
+\bottomrule
+\end{longtable}
+
+\section{Non-normative Implementation Milestones}
+
+The intended implementation order is:
+
+\begin{enumerate}
+  \item typed parameters, outputs, scalar expressions, and normalized views;
+  \item the decorator parser and source-located diagnostics;
+  \item canonical logical parallel mapping and fragment ownership;
+  \item first-class fill and copy with conservative synchronization planning;
+  \item fragment elementwise algebra and axis reductions;
+  \item mixed-precision SIMT MMA and the FlashAttention conformance kernel;
+  \item one exact native MMA capability adapted to \tinygrad{} \op{Wmma}; and
+  \item optimized pipeline rewriting after shared-memory effects are stable.
+\end{enumerate}
+
+The current builder frontend may remain as an internal construction and testing
+tool, but the Version 1 public contract is the decorated typed language defined
+above.
+
+\end{document}

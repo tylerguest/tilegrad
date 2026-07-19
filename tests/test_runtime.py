@@ -251,6 +251,22 @@ class TestRuntime(unittest.TestCase):
     out_t = Tensor.empty(4)
     self.assertEqual(run(k, out_t).tolist(), [0.0, 1.0, 10.0, 11.0])
 
+  def test_run_multi_element_register_live_out_of_range(self):
+    k = KernelBuilder("register_tile_live_out", ("out",))
+    out = k.buffer("out")
+    acc = k.register("acc", shape=(2,), dtype="float32")
+
+    acc[0] = 0
+    acc[1] = 0
+    with k.range("i", 1):
+      acc[0] = 1
+      acc[1] = 10
+    out[0] = acc[0]
+    out[1] = acc[1]
+
+    out_t = Tensor.empty(2)
+    self.assertEqual(run(k, out_t).tolist(), [1.0, 10.0])
+
   def test_run_tiled_gemm_bm_bn_accum_tile(self):
     k = KernelBuilder("tiled_gemm_bm_bn_accum_tile", ("out", "a", "b"))
     k.alloc("as", 6, "float32")
@@ -571,6 +587,18 @@ class TestRuntime(unittest.TestCase):
       910.0, 950.0, 990.0,
       1460.0, 1525.0, 1590.0,
     ])
+
+  def test_run_canonical_tiled_gemm_multiwarp_multiple_k_tiles(self):
+    M = N = K = 32
+    a_vals = [float((i % 7) - 3) for i in range(M * K)]
+    b_vals = [float((i % 5) - 2) for i in range(K * N)]
+    out = run(
+      tiled_gemm(M, N, K, BM=16, BN=16, BK=16),
+      Tensor.empty(M * N),
+      Tensor(a_vals),
+      Tensor(b_vals),
+    ).tolist()
+    self.assertEqual(out, ref_matmul(a_vals, b_vals, M, N, K))
 
   def test_run_grid_thread_fragment_gemm_exact_tile(self):
     out, expected = run_grid_thread_fragment_gemm_case(2, 2, 3, BM=2, BN=2, BK=3)

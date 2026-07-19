@@ -29,6 +29,14 @@ def find_tile_copy(body):
       if found is not None: return found
   return None
 
+def range_axes(body):
+  axes = set()
+  for op in body:
+    if isinstance(op, Range):
+      axes.add(op.axis)
+      axes.update(range_axes(op.body))
+  return axes
+
 def tile_copy_builder():
   k = KernelBuilder("debug_tile_copy", ("out", "inp"))
   out = k.buffer("out", shape=(2, 3), dtype="float32")
@@ -101,10 +109,11 @@ class TestDebug(unittest.TestCase):
     self.assertEqual(dbg.stages[0].name, "tile_ir")
     self.assertEqual(dbg.stages[-1].name, "scalar_ir")
 
-  def test_canonical_tiled_gemm_preserves_tile_ops_before_scalar_ir(self):
+  def test_canonical_tiled_gemm_uses_explicit_gpu_schedule(self):
     dbg = inspect_kernel(tiled_gemm(3, 3, 5, BM=2, BN=2, BK=3))
-    self.assertTrue(has_tile_copy(dbg.tile_ir.body))
-    self.assertTrue(has_tile_mma(dbg.tile_ir.body))
+    self.assertTrue({"global", "local", "reduce"}.issubset(range_axes(dbg.tile_ir.body)))
+    self.assertFalse(has_tile_copy(dbg.tile_ir.body))
+    self.assertFalse(has_tile_mma(dbg.tile_ir.body))
     self.assertFalse(has_tile_copy(dbg.scalar_ir.body))
     self.assertFalse(has_tile_mma(dbg.scalar_ir.body))
 

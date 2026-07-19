@@ -44,22 +44,35 @@ Already implemented:
 - First-class `TileMMA`.
 - `TileMMA` scalar fallback.
 - `TileMMA` scope and `float32` dtype validation.
-- Canonical tiled GEMM using `TileView -> TileCopy -> TileMMA -> guarded store`.
+- Cooperative-thread tiled GEMM with shared-memory staging and per-thread register microtiles.
 - M/N edge tile correctness coverage.
 - K-tail correctness coverage.
 - Debug stages: tile IR, expanded tile copies, expanded fragments/MMA, register unroll, scalar IR.
 - Optional lowered tinygrad UOp inspection.
-- Canonical GEMM example self-checks and prints inspect-stage intent.
-- Benchmark harness comparing tinygrad matmul and TileGrad GEMM variants.
+- Canonical GEMM example self-checks and prints its execution axes.
+- Paired benchmark harness comparing tinygrad matmul and TileGrad tiled GEMM.
+- Multi-element register tiles now close correctly over non-reduce range boundaries (previously only element 0 was preserved).
 
 Known MVP gaps:
 
 - `pipelined(...)` is syntax-only.
 - `coalesced_width` is metadata-only.
+- `TileCopy` scalar expansion has duplicate builder/pass logic that should be consolidated.
 - No vectorized copy lowering.
 - No WMMA/intrinsic lowering.
 - No real async copy, wait groups, double buffering, or software pipeline scheduling.
 - No CI workflow yet.
+
+## Recommended Next Steps
+
+Remaining stabilization work:
+
+1. ~~Fix or explicitly reject multi-element register tiles inside dynamic `k.range(...)` so unsupported cases fail clearly instead of risking silent wrong results.~~ **Done** — `close_register_scope` in `lowerer.py` now self-stores and ends all elements.
+2. Add minimal CI running `python3 -m pytest tests/`.
+3. Consolidate `TileCopy` scalar expansion into one shared implementation used by both plain `k.copy(...)` fallback paths and first-class `TileCopy` lowering.
+4. Document the exact MVP contract: `float32` `TileMMA`, static tile shapes, scalar fallback lowering, register-index restrictions, syntax-only `pipelined(...)`, and metadata-only `coalesced_width`.
+5. Add focused regression tests for nested `grid` / `threads` / `range` with `TileCopy` and `TileMMA`, larger register tiles, unsupported layouts/fills, and expression edge cases.
+6. Continue the optimization track with `TileCopy` classification before vectorized copy or WMMA work.
 
 ## Phase 1: Declare And Stabilize The MVP
 
@@ -68,8 +81,8 @@ Goal: make the current slow path clearly usable and documented.
 Work:
 
 - Keep README canonical GEMM description matched to implementation.
-- Keep benchmark launch labels reporting `threads=(1)` for current canonical GEMM.
-- Explicitly state that current GEMM is correctness-first and scalar-expanded.
+- Keep benchmark launch labels matched to the cooperative thread schedule.
+- Keep the scalar `TileMMA` fallback separate from the optimized built-in GEMM path.
 - Keep `k.gemm(...)` as the public tile-level GEMM API.
 - Keep `k.copy(...)` as the single synchronous data movement primitive.
 - Keep `k.pipelined(...)` documented as syntax-only.
@@ -91,8 +104,7 @@ Work:
 - Treat `examples/builder_canonical_tiled_gemm.py` as the canonical MVP example.
 - Keep the canonical GEMM example self-checking against a Python reference.
 - Keep the canonical GEMM example printing inspect stages.
-- Keep showing that `TileCopy` and `TileMMA` exist in `tile_ir`.
-- Keep showing that `TileCopy` and `TileMMA` are gone in `scalar_ir`.
+- Keep showing the global, local, and reduction axes used by the cooperative GEMM schedule.
 - Document the recommended smoke-test commands.
 
 Success criteria:
@@ -113,8 +125,9 @@ Work:
 - Improve user-facing validation errors for unsupported shapes, scopes, dtypes, layouts, and non-zero fills.
 - Keep tests for invalid `TileMMA` dtype combinations.
 - Keep tests for canonical GEMM inspection.
+- Consolidate copy scalar expansion so `k.copy(...)` and `TileCopy` cannot drift.
 - Add focused regression tests around nested ranges plus tile ops.
-- Document known register-tile limitations around dynamic range indexing.
+- Document the exact MVP contract and known register-tile limitations around dynamic range indexing.
 - Add minimal CI running `python3 -m pytest tests/`.
 
 Success criteria:
@@ -132,7 +145,7 @@ TileGrad reaches MVP when:
 - `python3 examples/builder_grid_threads_copy.py` runs.
 - `python3 examples/builder_tilecopy_inspect.py` runs.
 - `python3 examples/builder_canonical_tiled_gemm.py` runs and self-validates.
-- README accurately explains the current slow lowering path.
+- README accurately explains the cooperative GEMM path and scalar tile-op fallbacks.
 - Roadmap accurately separates implemented work from deferred optimization work.
 
 ## Non-Goals Before MVP

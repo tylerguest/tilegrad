@@ -646,13 +646,9 @@ class TestLowerer(unittest.TestCase):
       for end in reg_store_ends
     ))
 
-  # NOTE: multi-element register scope close inside k.range only preserves element 0.
-  # This is a known limitation: k.range("ko", ...) with multi-element register tiles
-  # is not yet supported (use Python for-loop instead). The register_numels infrastructure
-  # exists in the lowerer for a future fix.
-  def test_lower_multi_element_register_scope_closes_first_index(self):
+  def test_lower_multi_element_register_scope_closes_all_indices(self):
     ir = Kernel(
-      "test_lower_multi_element_register_scope_closes_first_index",
+        "test_lower_multi_element_register_scope_closes_all_indices",
       (Arg("out"),),
       (
         Alloc("acc", 2, "float32", "register"),
@@ -691,7 +687,7 @@ class TestLowerer(unittest.TestCase):
       if end.op is Ops.END and ko in end.src[1:]
       for idx in walk_stores(end.src[0])
     })
-    self.assertEqual(closed_indices, [0])
+    self.assertEqual(closed_indices, [0, 1])
 
   def test_lower_unrolls_register_tile_indices(self):
     ir = Kernel(

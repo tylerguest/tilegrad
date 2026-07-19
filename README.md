@@ -16,6 +16,8 @@ KernelBuilder -> tilegrad IR -> tinygrad UOps -> tinygrad runtime/codegen
 
 `tilegrad` is early and experimental. Current priorities are correctness, readability, and learning the right programming model before optimizing.
 
+The aspirational TileGrad V1 language is defined in the [LaTeX specification](spec/tilegrad-spec.tex), with a [rendered PDF](spec/tilegrad-spec.pdf) committed alongside it. The specification is a north-star contract; this README documents the currently implemented subset.
+
 ## Features
 
 - Explicit kernel builder API
@@ -31,7 +33,7 @@ KernelBuilder -> tilegrad IR -> tinygrad UOps -> tinygrad runtime/codegen
 - Tiled `copy(...)`
 - First-class `TileCopy` and `TileMMA` intent in debug IR
 - Fragment and `TileMMA` scalar fallback expansion
-- Canonical correctness-first tiled GEMM
+- Cooperative-thread tiled GEMM with register microtiles
 - Simple benchmark harness
 
 ## Setup
@@ -90,10 +92,7 @@ Result:
 Matches reference: True
 TileGrad IR stages:
 ['tile_ir', 'expand_tile_copies', 'expand_fragments', 'unroll_register_tiles', 'scalar_ir']
-tile_ir has TileCopy: True
-tile_ir has TileMMA: True
-scalar_ir has TileCopy: False
-scalar_ir has TileMMA: False
+tile_ir execution axes: ['global', 'local', 'reduce']
 ```
 
 Run fragment GEMM under grid/thread axes:
@@ -202,15 +201,15 @@ k = tiled_gemm(M, N, K, BM, BN, BK)
 It uses:
 
 - `grid(ceildiv(M, BM), ceildiv(N, BN))`
-- `threads(1)`
-- one scalar-expanded register tile per grid point
-- `TileView -> TileCopy -> TileMMA` intent before scalar fallback
+- cooperative local thread blocks
+- `2x2` per-thread register accumulator tiles when tile dimensions permit
 - shared A/B tiles
+- coalesced output-column thread mapping
 - K-tail guards
 - M/N edge guards
 - guarded output stores
 
-This path is correctness-first. It preserves tile-level intent for inspection, then expands to scalar operations before tinygrad UOp lowering. It is not intended to be fast yet.
+The default `16x64x32` schedule targets float32 CUDA-core GEMM. It distributes global loads across the thread block, reuses A/B values through shared memory, and keeps output microtiles in registers. `TileCopy` and `TileMMA` remain available as inspectable primitives with scalar fallback lowering, but the main GEMM path uses an explicit cooperative schedule.
 
 See:
 
