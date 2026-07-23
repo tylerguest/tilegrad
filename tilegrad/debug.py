@@ -3,8 +3,7 @@ from __future__ import annotations
 from contextlib import redirect_stdout
 from dataclasses import dataclass
 from io import StringIO
-from tinygrad.uop.ops import UOp
-from tinygrad.uop.render import print_uops
+from tilegrad import tinygrad_compat as tg
 from tilegrad.builder import KernelBuilder
 from tilegrad.ir import Kernel
 from tilegrad.lowerer import lower_kernel, prepare_kernel_stages
@@ -19,7 +18,7 @@ class DebugArtifact:
   tile_ir: Kernel
   stages: tuple[IRStage, ...]
   scalar_ir: Kernel
-  uops: UOp | None = None
+  uops: tg.UOp | None = None
 
   def uops_text(self) -> str:
     if self.uops is None:
@@ -39,17 +38,17 @@ def ir_stages(kernel) -> tuple[IRStage, ...]: return tuple(IRStage(name, ir) for
 
 def scalar_ir(kernel) -> Kernel: return ir_stages(kernel)[-1].kernel
 
-def lowered_uops(kernel, *args: UOp) -> UOp: return lower_kernel(_as_kernel(kernel), *args)
+def lowered_uops(kernel, *args: tg.UOp) -> tg.UOp: return lower_kernel(_as_kernel(kernel), *args)
 
-def inspect_kernel(kernel, *args: UOp) -> DebugArtifact:
+def inspect_kernel(kernel, *args: tg.UOp) -> DebugArtifact:
   tile = _as_kernel(kernel)
   stages = ir_stages(tile)
   uops = lowered_uops(tile, *args) if args else None
   return DebugArtifact(tile, stages, stages[-1].kernel, uops)
 
-def uops_text(uop: UOp) -> str:
-  if not isinstance(uop, UOp): raise TypeError(f"expected UOp, got {type(uop).__name__}")
+def uops_text(uop: tg.UOp) -> str:
+  if not isinstance(uop, tg.UOp): raise TypeError(f"expected UOp, got {type(uop).__name__}")
   out = StringIO()
   with redirect_stdout(out):
-    print_uops(list(uop.toposort()))
+    tg.print_uops(list(uop.toposort()))
   return out.getvalue()

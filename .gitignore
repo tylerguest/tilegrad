@@ -36,6 +36,7 @@ ROADMAP.md
 
 # tinygrad/tilegrad generated artifacts
 /viz/
+/benchmarks/results/
 *.dot
 *.svg
 *.prof

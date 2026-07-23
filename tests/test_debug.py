@@ -121,7 +121,7 @@ class TestDebug(unittest.TestCase):
     k = KernelBuilder("debug_coalesced_width", ("out", "inp"))
     out = k.buffer("out", shape=(4,), dtype="float32")
     inp = k.buffer("inp", shape=(4,), dtype="float32")
-    k.copy(inp.tile(), out.tile(), coalesced_width=4)
+    k.copy(inp, out, coalesced_width=4)
     dbg = inspect_kernel(k)
     tile_copy = find_tile_copy(dbg.tile_ir.body)
     self.assertIsNotNone(tile_copy)

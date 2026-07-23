@@ -400,7 +400,7 @@ class TestBuilder(unittest.TestCase):
         Range("j", 4, (Store("out", "j", Load("smem", "j")),)),
       ),
     )
-    self.assertEqual(k.build(), expected)
+    self.assertEqual(expand_tile_copies(k.build()), expected)
   
   def test_builder_copy_2d_ir(self):
     k = KernelBuilder("copy_2d", ("out", "inp"))
@@ -422,7 +422,7 @@ class TestBuilder(unittest.TestCase):
         Range("j", 6, (Store("out", "j", Load("smem", "j")),)),
       ),
     )
-    self.assertEqual(k.build(), expected)
+    self.assertEqual(expand_tile_copies(k.build()), expected)
 
   def test_builder_copy_2d_offset_ir(self):
     k = KernelBuilder("copy_2d_offset", ("out", "inp"))
@@ -448,7 +448,7 @@ class TestBuilder(unittest.TestCase):
         Range("j", 6, (Store("out", "j", Load("smem", "j")),)),
       ),
     )
-    self.assertEqual(k.build(), expected)
+    self.assertEqual(expand_tile_copies(k.build()), expected)
 
   def test_builder_copy_1d_col_offset_ir(self):
     k = KernelBuilder("copy_1d_col_offset", ("out", "inp"))
@@ -467,7 +467,7 @@ class TestBuilder(unittest.TestCase):
         )),
       ),
     )
-    self.assertEqual(k.build(), expected)
+    self.assertEqual(expand_tile_copies(k.build()), expected)
 
   def test_builder_copy_1d_strided_ir(self):
     k = KernelBuilder("copy_1d_strided", ("out", "inp"))
@@ -489,7 +489,7 @@ class TestBuilder(unittest.TestCase):
         )),
       ),
     )
-    self.assertEqual(k.build(), expected)
+    self.assertEqual(expand_tile_copies(k.build()), expected)
 
   def test_builder_copy_2d_col_offset_ir(self):
     k = KernelBuilder("copy_2d_col_offset", ("out", "inp"))
@@ -517,7 +517,7 @@ class TestBuilder(unittest.TestCase):
         )),
       ),
     )
-    self.assertEqual(k.build(), expected)
+    self.assertEqual(expand_tile_copies(k.build()), expected)
   
   def test_builder_copy_2d_kernel_runs(self):
     def copy_kernel(out, inp):
@@ -838,9 +838,14 @@ class TestBuilder(unittest.TestCase):
     inp = k.buffer("inp")
     k.copy(inp, out, shape=(4,))
     self.assertEqual(k.build().body, (
-      Range("_c0_i0", 4, (
-        Store("out", "_c0_i0", Load("inp", "_c0_i0")),
-      )),
+      TileCopy(
+        src="inp",
+        dst="out",
+        shape=(4,),
+        src_origin=(0,),
+        dst_origin=(0,),
+        index_names=("_c0_i0",),
+      ),
     ))
 
   def test_set_if_ir(self):
@@ -1051,7 +1056,7 @@ class TestBuilder(unittest.TestCase):
         Store("out", Add(1, "_c0_i0"), Load("inp", "_c0_i0")),
       )),),
     )
-    self.assertEqual(k.build(), expected)
+    self.assertEqual(expand_tile_copies(k.build()), expected)
   
   def test_builder_copy_2d_origins_ir(self):
     k = KernelBuilder("copy_2d_origins", ("out", "inp"))
@@ -1069,11 +1074,22 @@ class TestBuilder(unittest.TestCase):
         )),
       )),),
     )
-    self.assertEqual(k.build(), expected)
+    self.assertEqual(expand_tile_copies(k.build()), expected)
 
   def test_builder_copy_3d_ir(self):
     k = KernelBuilder("copy_3d", ("out", "inp"))
     k.copy("inp", "out", shape=(2, 2, 3))
+    tile = k.build()
+    self.assertEqual(tile.body, (
+      TileCopy(
+        src="inp",
+        dst="out",
+        shape=(2, 2, 3),
+        src_origin=(0, 0, 0),
+        dst_origin=(0, 0, 0),
+        index_names=("_c0_i0", "_c0_i1", "_c0_i2"),
+      ),
+    ))
     expected = Kernel(
       "copy_3d",
       (Arg("out"), Arg("inp")),
@@ -1089,7 +1105,7 @@ class TestBuilder(unittest.TestCase):
         )),
       )),),
     )
-    self.assertEqual(k.build(), expected)
+    self.assertEqual(expand_tile_copies(tile), expected)
 
   def test_builder_copy_infers_shape_from_dst_ref(self):
     k = KernelBuilder("copy_infer_shape", ("out", "inp"))
@@ -1103,7 +1119,7 @@ class TestBuilder(unittest.TestCase):
         Store("out", "_c0_i0", Load("inp", "_c0_i0")),
       )),),
     )
-    self.assertEqual(k.build(), expected)
+    self.assertEqual(expand_tile_copies(k.build()), expected)
 
   def test_builder_copy_guard_fill_zero_ir(self):
     k = KernelBuilder("copy_guard_fill_zero", ("out", "inp"))
@@ -1118,7 +1134,7 @@ class TestBuilder(unittest.TestCase):
         )),
       )),),
     )
-    self.assertEqual(k.build(), expected)
+    self.assertEqual(expand_tile_copies(k.build()), expected)
 
   def test_builder_copy_nonzero_fill_fails(self):
     k = KernelBuilder("copy_bad_fill", ("out", "inp"))

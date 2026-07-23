@@ -18,6 +18,8 @@ KernelBuilder -> tilegrad IR -> tinygrad UOps -> tinygrad runtime/codegen
 
 The aspirational TileGrad V1 language is defined in the [LaTeX specification](spec/tilegrad-spec.tex), with a [rendered PDF](spec/tilegrad-spec.pdf) committed alongside it. The specification is a north-star contract; this README documents the currently implemented subset.
 
+The live tinygrad boundary is documented in the [integration contract](spec/tinygrad-integration-contract.md).
+
 ## Features
 
 - Explicit kernel builder API
@@ -32,7 +34,7 @@ The aspirational TileGrad V1 language is defined in the [LaTeX specification](sp
 - Guarded loads and stores
 - Tiled `copy(...)`
 - First-class `TileCopy` and `TileMMA` intent in debug IR
-- Fragment and `TileMMA` scalar fallback expansion
+- `TileCopy`, fragment, and `TileMMA` scalar fallback expansion
 - Cooperative-thread tiled GEMM with register microtiles
 - Simple benchmark harness
 
@@ -147,7 +149,8 @@ With tinygrad debugging enabled, this lowers to GPU block and thread indices suc
 
 ## Copy
 
-`copy(...)` is a synchronous helper that expands into normal TileGrad loops.
+`copy(...)` emits a first-class `TileCopy` in TileGrad IR. Portable lowering
+expands it into normal TileGrad loops before lowering to tinygrad UOps.
 
 ```python
 k.copy(

@@ -63,18 +63,6 @@ def _buffer_name(x):
 def _buffer_ref(x): return x.buffer if isinstance(x, TileView) else x
 def _buffer_index(buffer, index): return buffer._index(index) if isinstance(buffer, BufferRef) else index
 def _fragment_name(x): return x.name if isinstance(x, FragmentRef) else x
-def _and(lhs, rhs):
-  if lhs is None: return rhs
-  if rhs is None: return lhs
-  return lhs & rhs 
-def _tile_guard(tile, names, origin):
-  if tile is None: return None
-  guard = tile.mask
-  if tile.bounds is not None:
-    for i, bound in enumerate(tile.bounds):
-      coord = _add_if_nonzero(_origin_at(origin, i), Var(names[i]))
-      guard = _and(guard, coord < bound)
-  return guard
 def _flatten_nd_index(indices, shape):
   if len(indices) != len(shape): raise ValueError(f"{len(indices)}D index does not match {len(shape)}D shape")
   if len(indices) == 1: return indices[0]
@@ -87,25 +75,6 @@ def _flatten_nd_index(indices, shape):
     stride *= dim
     flat = Add(Mul(idx, stride), flat)
   return flat
-
-def _add_if_nonzero(lhs, rhs):
-  return Add(lhs, rhs) if lhs != 0 else rhs
-
-def _origin_at(origin, dim):
-  return origin[dim] if dim < len(origin) else 0
-
-def _copy_src_index(indices, shape, origin, stride):
-  shifted = tuple(_add_if_nonzero(_origin_at(origin, i), idx) for i, idx in enumerate(indices))
-  if len(shape) == 1 and stride is not None and len(origin) >= 2: return Index2D(shifted[0], _origin_at(origin, 1), stride)
-  if len(shape) == 1: return shifted[0]
-  if len(shape) == 2: return Index2D(shifted[0], shifted[1], stride)
-  return _flatten_nd_index(shifted, shape)
-
-def _copy_dst_index(indices, shape, origin, stride):
-  shifted = tuple(_add_if_nonzero(_origin_at(origin, i), idx) for i, idx in enumerate(indices))
-  if len(shape) == 1: return shifted[0]
-  if len(shape) == 2: return Index2D(shifted[0], shifted[1], stride)
-  return _flatten_nd_index(shifted, shape)
 
 def _copy_shape(src, dst, shape):
   if shape is not None: return shape
@@ -256,7 +225,9 @@ class KernelBuilder:
     _validate_tile_copy_shape(dst_tile, shape, "destination")
 
     if src_origin is None:
-      src_origin = src_tile.origin if src_tile is not None else (src_row_off, src_col_off) if len(shape) >= 2 or stride is not None else (src_col_off,) 
+      if src_tile is not None: src_origin = src_tile.origin
+      elif len(shape) == 1: src_origin = (src_row_off, src_col_off) if stride is not None else (src_col_off,)
+      else: src_origin = (src_row_off, src_col_off) + tuple(0 for _ in shape[2:])
     if dst_origin is None:
       dst_origin = dst_tile.origin if dst_tile is not None else tuple(0 for _ in shape)
 
@@ -275,48 +246,25 @@ class KernelBuilder:
 
     names = tuple(f"_c{n}_i{i}" for i in range(len(shape)))
 
-    if src_tile is not None or dst_tile is not None:
-      self._current_body().append(TileCopy(
-        src=src_name,
-        dst=dst_name,
-        shape=shape,
-        src_origin=src_origin,
-        dst_origin=dst_origin,
-        src_stride=src_stride,
-        dst_stride=dst_stride,
-        src_bounds=src_tile.bounds if src_tile is not None else None,
-        dst_bounds=dst_tile.bounds if dst_tile is not None else None,
-        src_mask=src_tile.mask if src_tile is not None else None,
-        dst_mask=dst_tile.mask if dst_tile is not None else None,
-        guard=guard,
-        fill=fill,
-        coalesced_width=coalesced_width,
-        src_layout=src_tile.layout if src_tile is not None else None,
-        dst_layout=dst_tile.layout if dst_tile is not None else None,
-        index_names=names,
-      ))
-      return
-
-    src_idx = _copy_src_index(names, shape, src_origin, src_stride)
-    dst_idx = _copy_dst_index(names, shape, dst_origin, dst_stride)
-
-    load_guard = _tile_guard(src_tile, names, src_origin)
-    store_guard = _tile_guard(dst_tile, names, dst_origin)
-
-    if guard is not None and fill == 0:
-      load_guard = _and(load_guard, guard)
-    elif guard is not None:
-      store_guard = _and(store_guard, guard) 
-    
-    value = Load(src_name, src_idx)
-    if load_guard is not None: value = LoadIf(load_guard, src_name, src_idx)
-
-    stmt = StoreIf(store_guard, dst_name, dst_idx, value) if store_guard is not None else Store(dst_name, dst_idx, value)
-    
-    body = (stmt,)
-    for name, extent in reversed(tuple(zip(names, shape))):
-      body = (Range(name, extent, body),)
-    self._current_body().extend(body)
+    self._current_body().append(TileCopy(
+      src=src_name,
+      dst=dst_name,
+      shape=shape,
+      src_origin=src_origin,
+      dst_origin=dst_origin,
+      src_stride=src_stride,
+      dst_stride=dst_stride,
+      src_bounds=src_tile.bounds if src_tile is not None else None,
+      dst_bounds=dst_tile.bounds if dst_tile is not None else None,
+      src_mask=src_tile.mask if src_tile is not None else None,
+      dst_mask=dst_tile.mask if dst_tile is not None else None,
+      guard=guard,
+      fill=fill,
+      coalesced_width=coalesced_width,
+      src_layout=src_tile.layout if src_tile is not None else None,
+      dst_layout=dst_tile.layout if dst_tile is not None else None,
+      index_names=names,
+    ))
   
   def build(self): return Kernel(self.name, self.args, tuple(self._body))
 

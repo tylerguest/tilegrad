@@ -68,7 +68,9 @@ Implemented:
 - Shared and register allocations, barriers, and effect ordering.
 - Guarded loads and stores with edge and tail coverage.
 - First-class `TileView`, `TileCopy`, and `TileMMA` nodes.
-- Scalar fallback lowering for `TileCopy` and `TileMMA`.
+- Canonical `TileCopy` emission for every builder copy form.
+- One portable scalar expansion for all `TileCopy` operations and scalar
+  fallback lowering for `TileMMA`.
 - 1D, 2D, and compact 3D copies with origins, strides, masks, bounds,
   zero-fill, and `coalesced_width` metadata.
 - Cooperative-thread FP32 GEMM with shared-memory staging and register
@@ -102,15 +104,14 @@ optimization work.
 ## Immediate Work Order
 
 1. Publish the tinygrad integration contract and compatibility checks.
-2. Consolidate the scalar `TileCopy` implementation.
-3. Replace exploratory benchmarks with the manifest runner.
-4. Introduce scheduled/legalized IR and capability records.
-5. Implement effects, alias, collective-legality, and numerical contracts.
-6. Convert canonical GEMM to first-class `TileCopy` and `TileMMA`.
-7. Implement core layouts.
-8. Implement vector and cooperative synchronous copy.
-9. Implement mixed-precision native matrix lowering.
-10. Add reproducible schedule tuning and publish the first performance alpha.
+2. Replace exploratory benchmarks with the manifest runner.
+3. Introduce scheduled/legalized IR and capability records.
+4. Implement effects, alias, collective-legality, and numerical contracts.
+5. Convert canonical GEMM to first-class `TileCopy` and `TileMMA`.
+6. Implement core layouts.
+7. Implement vector and cooperative synchronous copy.
+8. Implement mixed-precision native matrix lowering.
+9. Add reproducible schedule tuning and publish the first performance alpha.
 
 ## Phase 0: Stabilization And Integration Contract
 
@@ -125,8 +126,6 @@ Work:
 - Add synthetic CUDA SM75/80/89 renderer tests for native matrix selection and
   emitted `mma.sync` source.
 - Keep performance suites separate from fast correctness tests.
-- Consolidate duplicate scalar copy construction so builder copy helpers and
-  first-class `TileCopy` share one implementation.
 - Add regressions for nested global/local/serial/reduce axes containing tile
   operations, larger register tiles, invalid fills/layouts, aliases, overlapping
   copies, barriers, and expression edge cases.
