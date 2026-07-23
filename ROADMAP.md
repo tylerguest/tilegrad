@@ -31,6 +31,33 @@ TileGrad has four milestones:
 The performance alpha intentionally does not wait for the `@tg.kernel` frontend.
 The builder and decorator must produce the same Tile IR before Core 1.0.
 
+## Validation Environment Workflow
+
+Use each environment only for the evidence it can provide:
+
+| Environment | Required use | Must not claim |
+| --- | --- | --- |
+| CPU | Portable IR, validation, scalar semantics, and fast correctness tests | GPU lowering or performance |
+| NVIDIA GTX 1050 (SM61) | Real CUDA scalar/SIMT execution, vector copy, transpose, barriers, and launch correctness | Native Matrix or modern tensor-core performance |
+| AMD MockGPU | AMD capability selection, WMMA/MFMA lowering, native instruction inspection, launch geometry, and emulated numerical correctness | Real latency, bandwidth, occupancy, or throughput |
+| Synthetic CUDA SM75/80/89 renderer tests | CUDA native-matrix eligibility, `Ops.WMMA`, generated `mma.sync`, and renderer/compiler acceptance | Runtime correctness or performance on that architecture |
+| Physical modern GPU | Final native correctness, hardware resource behavior, tuning, and performance-manifest results | Results for a different device or capability tuple |
+
+The required development loop is:
+
+1. Prove portable semantics on CPU.
+2. Prove real scalar/SIMT CUDA behavior on the GTX 1050.
+3. Prove AMD native-matrix lowering and emulated correctness with MockGPU.
+4. Prove CUDA native-matrix selection and source emission with synthetic modern
+   renderer tests.
+5. Run identical correctness and inspection cases on physical target hardware.
+6. Tune and collect performance-manifest samples only on physical hardware.
+
+MockGPU timing is emulator timing. It must never be recorded as device latency,
+bandwidth, TFLOP/s, a performance regression, or evidence for Competitive or
+Parity claims. MockGPU removes compiler-development and correctness blockers; it
+does not remove the physical-hardware requirement for performance claims.
+
 ## Current Baseline
 
 Implemented:
@@ -62,7 +89,7 @@ optimization work.
   reductions.
 - No capability records, profile selection, or native rejection diagnostics
   exist.
-- tinygrad is not pinned and no versioned integration contract exists.
+- No versioned tinygrad integration contract exists.
 - Empty `KernelInfo.opts_to_apply` is used without a complete tested schedule
   preservation contract.
 - Tile layouts are metadata placeholders and are rejected by validation.
@@ -71,21 +98,19 @@ optimization work.
 - `pipelined(...)` discards stage information and behaves like a serial loop.
 - Existing benchmark scripts allocate outputs during timed calls and do not
   satisfy the performance manifest.
-- No CI workflow exists.
 
 ## Immediate Work Order
 
-1. Add correctness CI and pin tinygrad.
-2. Publish the tinygrad integration contract and compatibility checks.
-3. Consolidate the scalar `TileCopy` implementation.
-4. Replace exploratory benchmarks with the manifest runner.
-5. Introduce scheduled/legalized IR and capability records.
-6. Implement effects, alias, collective-legality, and numerical contracts.
-7. Convert canonical GEMM to first-class `TileCopy` and `TileMMA`.
-8. Implement core layouts.
-9. Implement vector and cooperative synchronous copy.
-10. Implement mixed-precision native matrix lowering.
-11. Add reproducible schedule tuning and publish the first performance alpha.
+1. Publish the tinygrad integration contract and compatibility checks.
+2. Consolidate the scalar `TileCopy` implementation.
+3. Replace exploratory benchmarks with the manifest runner.
+4. Introduce scheduled/legalized IR and capability records.
+5. Implement effects, alias, collective-legality, and numerical contracts.
+6. Convert canonical GEMM to first-class `TileCopy` and `TileMMA`.
+7. Implement core layouts.
+8. Implement vector and cooperative synchronous copy.
+9. Implement mixed-precision native matrix lowering.
+10. Add reproducible schedule tuning and publish the first performance alpha.
 
 ## Phase 0: Stabilization And Integration Contract
 
@@ -93,14 +118,18 @@ Goal: make the portable path and tinygrad boundary reliable enough to optimize.
 
 Work:
 
-- Add CI running the full correctness suite against the pinned tinygrad revision.
-- Keep performance suites separate from fast correctness CI.
+- Run portable tests on CPU and CUDA scalar/SIMT tests on available physical
+  hardware.
+- Add AMD MockGPU tests for native matrix lowering, instruction inspection,
+  launch geometry, and emulated numerical correctness.
+- Add synthetic CUDA SM75/80/89 renderer tests for native matrix selection and
+  emitted `mma.sync` source.
+- Keep performance suites separate from fast correctness tests.
 - Consolidate duplicate scalar copy construction so builder copy helpers and
   first-class `TileCopy` share one implementation.
 - Add regressions for nested global/local/serial/reduce axes containing tile
   operations, larger register tiles, invalid fills/layouts, aliases, overlapping
   copies, barriers, and expression edge cases.
-- Pin an exact tinygrad Git SHA or narrow tested SHA range.
 - Add a versioned integration contract describing admitted UOps,
   `KernelInfo` behavior, required legalization, schedule preservation, target
   discovery, native matrix selection, and known incompatibilities.
@@ -110,11 +139,10 @@ Work:
 
 Gate:
 
-- Full correctness suite passes locally and in CI.
-- A clean environment reproduces the suite from recorded revisions.
+- Full correctness suite passes locally.
 - No tile operation reaches UOp lowering without validation.
 - Existing UOp and rendered-program inspection preserves grid/local geometry,
-  memory scopes, and barriers on the pinned revision.
+  memory scopes, and barriers through the current tinygrad integration.
 - Portable outputs remain unchanged from the recorded baseline.
 
 ## Phase 1: Claim-Quality Benchmarking
@@ -130,6 +158,8 @@ Work:
 - Report compilation and autotuning separately from steady-state execution.
 - Use comparable device-event timing when available and synchronized host timing
   otherwise.
+- Detect MockGPU and refuse to emit performance-claim records from emulator
+  timing.
 - Pin TileLang for TileLang-like claims and retain tinygrad/vendor comparisons
   for diagnostics.
 - Disable baseline mechanisms absent from the claimed TileGrad capability tuple.
@@ -149,6 +179,7 @@ Gate:
 - Portable benchmark results can be replayed from the emitted claim record.
 - The runner can add capability and native inspection fields without changing
   its timing protocol.
+- Performance records identify a physical device and reject MockGPU targets.
 
 Performance thresholds are defined by `spec/performance-manifest.md`:
 
@@ -201,8 +232,8 @@ Gate:
 - Inspection reports the selected profile, layouts, and rejection reasons.
 - Unsupported native requests and portable fallback are replayable from the
   capability record.
-- Selection preserves current portable outputs and schedules on the pinned
-  integration.
+- Selection preserves current portable outputs and schedules on the current
+  tested integration.
 
 ## Phase 3: Effects, Views, And Numerical Contract
 
@@ -317,26 +348,34 @@ Work:
 - Support FP16 or BF16 inputs with FP32 accumulation and an explicit output
   dtype.
 - Select one renderer-advertised native matrix configuration supported by the
-  pinned tinygrad integration.
+  current tested tinygrad integration.
 - Initially use canonical multiply/reduce plus explicit `OptOps.TC` when that is
   the documented integration contract.
 - Do not construct renderer-internal native matrix arguments in TileGrad.
 - Prove the final typed native matrix operation in post-lowering UOps and
   rendered source.
+- Use AMD MockGPU for the first end-to-end native matrix lowering and emulated
+  correctness tests.
+- Use synthetic SM75/80/89 CUDA renderer tests to validate CUDA native matrix
+  selection and emitted source before physical hardware is available.
 - Keep portable mixed-precision MMA for identical inputs, masks, and tails.
 - Add fused activation epilogue support through normal TileGrad elementwise IR.
 
 Gate:
 
 - Run the complete Native Matrix suite from the performance manifest.
+- Re-run MockGPU and renderer cases on the physical target before publishing a
+  capability claim.
 - Cover square, rectangular, edge-tiled, and fused-epilogue cases.
 - At least one edge case exercises masked `TileCopy` and layout legalization.
 - Report latency, TFLOP/s, native operation count/configuration, vector widths,
   shared-memory use, launch geometry, layouts, and schedule.
 - The first release claim reaches at least the Competitive threshold against a
   mechanism-matched pinned TileLang baseline when TileLang supports the tuple.
-  Otherwise it must name its pinned tinygrad or vendor baseline and must not use
-  TileLang-like performance language.
+  Otherwise it must name its recorded tinygrad revision or vendor baseline and
+  must not use TileLang-like performance language.
+- All latency, throughput, bandwidth, tuning, and resource results come from the
+  physical device named by the capability tuple, never MockGPU.
 
 ## Phase 7: Reproducible Tuning
 
@@ -367,7 +406,7 @@ Gate:
 
 The builder-first performance alpha requires:
 
-- Correctness CI and a pinned tinygrad integration contract.
+- A versioned tinygrad integration contract.
 - Manifest-compliant benchmark infrastructure.
 - Scheduled/legalized IR and deterministic capability selection.
 - Effect, alias, collective-legality, and numerical records for every claimed
@@ -378,6 +417,8 @@ The builder-first performance alpha requires:
 - Reproducible tuning and inspection artifacts.
 - At least one published Competitive Vector and Cooperative copy claim.
 - At least one published Competitive Native Matrix capability claim.
+- Physical-hardware benchmark artifacts for both performance claims; MockGPU
+  artifacts are retained separately as correctness and compiler evidence.
 
 The alpha does not require the decorator frontend, async copy, TMA, WGMMA,
 clusters, warp specialization, or implicit autograd.
@@ -409,13 +450,79 @@ Gate:
 
 ## Workload Milestones
 
+### Batched Transpose
+
+- Support dense and admitted strided 2D/3D inputs with shape-specialized launch
+  geometry.
+- Use vectorized global loads, register microtiles, shared-memory staging, and
+  cooperative output stores.
+- Add shared padding and profile-owned swizzles to avoid bank conflicts.
+- Cover aligned tiles, irregular edges, non-vector-divisible tails, and batched
+  strides.
+- Use this as the first end-to-end proof of layouts plus Vector and Cooperative
+  copy lowering.
+- Add transpose shapes and bandwidth gates to the copy performance manifest.
+
+### Quantization And Packed Formats
+
+- Implement portable per-token, per-channel, and per-block abs-max scaling.
+- Add FP8 casts and scale-factor outputs before FP4 and sub-byte packing.
+- Represent scale-factor dtype, shape, stride, block geometry, and layout in
+  capability records.
+- Support precomputed scales, scale-only output, and cast-back references.
+- Add packed load/store, unpacking, rounding, saturation, and zero behavior to
+  the numerical conformance manifest.
+- Add fused cast-and-transpose once standalone casting and transpose pass their
+  correctness and performance gates.
+- Cover aligned, strided, masked-tail, and irregular token/hidden dimensions.
+- Publish per-token/per-channel/per-block suites through a performance-manifest
+  revision before making throughput claims.
+
+### Fused SwiGLU And Quantization
+
+- Implement cast, select, clamp, exponential, reciprocal, and pointwise
+  activation primitives through tinygrad scalar UOps.
+- Fuse SwiGLU, optional routing weights, abs-max reduction, scale generation,
+  and FP8 output in one kernel.
+- Support optional token-to-top-k and token-to-expert mappings through ordinary
+  indexed loads after alias and bounds validation.
+- Add optional clamp counters only after typed atomics are available.
+- Provide explicit forward and backward kernels with the same numerical record.
+- Benchmark against an unfused tinygrad composition and a pinned matching fused
+  baseline.
+
 ### Quantized GEMM
 
-- Build a portable unpack/dequantize reference with FP32 accumulation.
-- Add fused INT8 weight-only GEMM, then INT4.
+- Build portable unpack/dequantize references from the Quantization and Packed
+  Formats milestone with FP32 accumulation.
+- Add fused INT8 weight-only GEMM, then INT4 and admitted FP8/FP4 variants.
 - Represent packed layouts, scales, and zero-points in capability records.
 - Cover square, narrow-M decode, edge, and fused-epilogue workloads.
 - Publish results only after a manifest revision defines the suite and baseline.
+
+### Top-K Expert Selection
+
+- Implement repeated maximum reduction with deterministic smallest-index tie
+  breaking.
+- Add replicated reducer state or an equivalent portable reduction mapping.
+- Cover expert counts that do not align to subgroup or workgroup width.
+- Support shape-specialized `k`, integer index outputs, masks, and negative
+  infinity padding.
+- Add subgroup acceleration only through a declared Subgroup capability.
+- Differential-test every optimized path against the portable implementation.
+
+### MoE Routing
+
+- Implement token/expert counts, prefix sums, stable mappings, expansion, fused
+  reduction, and routing-weight normalization.
+- Add gather and scatter through validated indexed loads/stores.
+- Use scans for offsets and typed atomics only where ownership cannot make writes
+  disjoint.
+- Cover empty experts, duplicated routes, uneven token counts, masked tensor
+  parallel partitions, and deterministic ordering requirements.
+- Add fused expansion/reduction only after standalone mapping operations pass.
+- Define routing-specific correctness and performance suites before publishing
+  claims.
 
 ### Normalization
 
@@ -426,6 +533,20 @@ Gate:
 - Tune cooperative/vector loads, row ownership, and reduction layouts.
 - Use the manifest protocol against a pinned matching baseline.
 
+### Explicit Forward, Backward, And Multiple Outputs
+
+- Support kernels returning multiple tensors and internal workspaces through
+  normal `Tensor.custom_kernel` effects.
+- Write explicit backward kernels for fused normalization, quantization,
+  routing, and gating operations.
+- Preserve saved intermediates without forcing host synchronization.
+- Add partial-gradient outputs followed by explicit reduction kernels where a
+  single launch cannot safely complete the reduction.
+- Test lazy graph composition, `@function(precompile=True)`, and enclosing
+  `TinyJit` replay for forward/backward pairs.
+- Integrate tinygrad `grad_fxn` only as an optional wrapper around explicit
+  kernels.
+
 ### Attention
 
 - Build a synchronous tiled `QK^T -> online softmax -> PV` reference.
@@ -434,6 +555,25 @@ Gate:
 - Tune block shapes, layouts, copy widths, and synchronous pipeline stages.
 - Add decode and prefill suites through a manifest revision.
 - Treat async copy, warp specialization, TMA, and WGMMA as later capabilities.
+
+### Engram-Style Fused Kernels
+
+- Start with a synchronous forward reference combining vector loads, dot and
+  sum-of-squares reductions, reciprocal square root, gating activation, and
+  fused output.
+- Add a synchronous backward path with explicit partial weight-gradient output
+  and a separate reduction kernel.
+- Support admitted strided inputs, multiple outputs, saved intermediates, and
+  shape-specialized hidden sizes.
+- Add native matrix operations only where the dataflow contains eligible tile
+  contractions.
+- Tune block geometry, vector width, layouts, and synchronous pipeline stages.
+- Add persistent scheduling only through the Scheduling profile.
+- Add subgroup reductions, async copy, explicit waits, and double buffering only
+  after tinygrad provides matching typed primitives and effects.
+- Treat SM90/SM100-specific TMA, WGMMA, and warp-specialized variants as
+  independent Target capability claims, not requirements for the portable
+  workload.
 
 ## Core Language Completion
 
@@ -477,7 +617,7 @@ Work:
 - Make the decorator and `KernelBuilder` construct the same canonical Tile IR.
 - Implement specialization keys containing dtype, rank, shape, admitted
   strides, target, layouts, numerical mode, profile/capability versions, tuned
-  schedule, TileGrad revision, and pinned tinygrad revision.
+  schedule and TileGrad revision.
 - Cache scheduled/legalized Tile IR and UOp sinks while leaving binary and
   program caches to tinygrad.
 - Construct normal `Tensor.custom_kernel` graphs without creating an internal
@@ -504,7 +644,7 @@ Core 1.0 requires:
 - Identical canonical Tile IR from both frontends.
 - Complete specialization and cache identity for shapes, dtypes, layouts,
   profiles, target, revisions, and tuned schedule.
-- Portable lowering on every target where the pinned tinygrad integration can
+- Portable lowering on every target where the supported tinygrad integration can
   legally execute the required Core UOps.
 - A published compatible and execution-tested target matrix.
 - Composition inside `@function(precompile=True)` and enclosing `TinyJit`.
