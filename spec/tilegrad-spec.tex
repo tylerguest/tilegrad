@@ -12,7 +12,7 @@
 \usepackage{tabularx}
 
 \hypersetup{colorlinks=true,linkcolor=MidnightBlue,urlcolor=MidnightBlue,
-  pdftitle={TileGrad 1.0 language specification}}
+  pdftitle={TileGrad 1.0 Language Specification}}
 \lstset{language=Python,basicstyle=\ttfamily\small,columns=fullflexible,
   keepspaces=true,frame=single,framerule=0.2pt,xleftmargin=0.4em,
   xrightmargin=0.4em,aboveskip=0.5em,belowskip=0.5em}
@@ -27,7 +27,7 @@
 \newcommand{\may}{\textbf{MAY}}
 
 \title{\TileGrad{} 1.0 Language Specification\\
-\large A tile language over \tinygrad{} UOps}
+\large A tile programming language over \tinygrad{} UOps}
 \author{TileGrad contributors}
 \date{July 2026}
 
@@ -35,467 +35,704 @@
 \maketitle
 \thispagestyle{empty}
 
-\section*{Scope}
+\section*{Purpose}
 
-\TileGrad{} is a Python-embedded language for high-performance tiled kernels.
-Programs describe logical tiles, memory placement, launch geometry, and
-scheduling intent. The \TileGrad{} compiler validates each program, assigns work
-to lanes, inserts required synchronization, legalizes layouts, and selects
-instructions. It then lowers the program to \tinygrad{} UOps. \tinygrad{}
-renders, compiles, and executes those UOps on the selected device.
+\TileGrad{} is a Python-embedded language for explicitly scheduled tiled
+kernels. It provides TileLang-like ergonomics while using \tinygrad{} UOps as
+the sole normative backend IR for \TileGrad{} 1.0.
 
-This document specifies the planned \TileGrad{} 1.0 language, not the current
-experimental implementation. The emphasized keywords \must{}, \mustnot{},
-\should{}, and \may{} indicate normative requirements. Exact Python signatures
-and target records are defined in the API and capability references.
+\TileGrad{} owns tile-level semantics, storage placement, scheduling intent,
+validation, and inspection. \tinygrad{} owns scalar semantics, instruction
+selection, register and memory planning, rendering, compilation, and execution.
 
-A versioned numerical manifest defines the numerical requirements, and
-conformance tests verify them. Each conformance revision pins the manifest and
-the supported \tinygrad{} revisions.
+TileGrad is intended for fused and specialized tinygrad operators such as
+tiled GEMM, attention, normalization, quantized kernels, and research dataflows
+that require explicit scheduling beyond the Tensor API.
 
-Portable operations have target-independent semantics and provide a scalar or
-SIMT lowering. An implementation \may{} choose a different legal lowering for
-performance, but that choice \mustnot{} produce observable results outside the
-numerical contract. Expert operations expose target-specific behavior only
-through versioned capabilities. Legalization \must{} reject an expert operation
-when its requested capability is unavailable.
-
-\section*{Programs}
-
-A decorated function accepts runtime tensors and scalars and \may{} also accept
-compile-time parameters. It declares its outputs, contains one or more kernel
-launch regions, and returns those outputs.
-
-Calling the function specializes the program, compiles and caches the
-specialization, and executes it. Kernel regions are submitted in source order.
-Each region depends on every preceding region whose effects it consumes. When a
-dependent-launch capability is available, an implementation \may{} overlap
-regions only when doing so preserves those dependencies.
-
-A returned tensor retains the device dependencies of every region that produced
-it. Returning the tensor does not require host synchronization. Workgroups
-within a launch are unordered unless an advertised cooperative capability
-provides an ordering mechanism.
+The central compilation path is:
 
 \begin{center}
-\begin{tabularx}{\textwidth}{@{}lYY@{}}
-\toprule
-\textbf{Value} & \textbf{Meaning} & \textbf{Legal use} \\
-\midrule
-Compile-time & Constant included explicitly in the specialization key. & Python control,
-shapes, layouts, workgroup shape, unrolling, and scheduling. \\
-Shape-specialized & Bound from tensor shape or stride and included in the key. &
-The same uses as compile-time values after binding. \\
-Runtime & Device scalar not specialized by value. & Device expressions,
-predicates, indices, and dynamic serial bounds. It cannot determine storage or
-launch shapes. \\
-\bottomrule
-\end{tabularx}
+\texttt{TileGrad source $\to$ Tile IR $\to$ scheduled Tile IR $\to$
+tinygrad UOp Sink $\to$ tinygrad program}
 \end{center}
 
-An external tensor has a dtype, rank, shape, strides, device, and access mode.
-Portable conformance requires dense, contiguous external tensors. Strided
-external tensors require an advertised capability. An input is read-only unless
-declared writable.
+This document specifies a stable Core language and optional Standard and Target
+profiles. A Core operation has a portable scalar or SIMT lowering. Profiles add
+native matrix operations, software pipelines, atomics, subgroup collectives,
+and target-specific mechanisms when the pinned \tinygrad{} integration can
+represent them safely.
 
-The host wrapper allocates each output unless the caller supplies it. Outputs
-\mustnot{} alias any input or other output unless the declarations permit the
-alias. The function returns outputs in source order. A rank-zero tensor
-represents a scalar device result.
+Portable Core does not depend on a vendor, renderer family, native matrix
+facility, subgroup width, or Target profile. For every target on which the
+pinned \tinygrad{} integration can legally lower and execute the Core UOps
+required by a program, \TileGrad{} \must{} provide the Core lowering without a
+second backend.
 
-Repeated symbols in declarations \must{} bind to the same value. The
-specialization key includes every source value and environment field that can
-affect legalization or code generation. These fields include dtype, rank,
-device, numerical mode, capability registry, and the TileGrad and \tinygrad{}
-revisions.
+On capability tuples with suitable typed native matrix support, the Native
+Matrix profile targets TileLang-like performance for ordinary dense matrix
+workloads. Performance is a target-scoped, versioned conformance claim, not a
+promise of exact or universal TileLang parity.
+
+The keywords \must{}, \mustnot{}, \should{}, and \may{} indicate normative
+requirements.
+
+\section*{Ownership Boundary}
+
+\TileGrad{} \must{} provide:
+
+\begin{itemize}
+  \item one canonical Tile IR shared by the parsed and builder frontends;
+  \item explicit execution axes, storage scopes, tile views, layouts, and tile
+        operations;
+  \item validation before constructing \tinygrad{} UOps;
+  \item a schedule-preserving adapter to a pinned \tinygrad{} revision range;
+  \item inspection of every Tile IR stage and the emitted UOp graph.
+\end{itemize}
+
+\TileGrad{} \mustnot{} provide a second scalar ALU, renderer, compiler, runtime,
+or numerical contract. It \mustnot{} promise a target mechanism that the pinned
+\tinygrad{} integration cannot represent with typed operations and launch
+metadata.
+
+\TileGrad{} may select a capability class and the schedule and outer layouts
+required by that class. The pinned \tinygrad{} integration owns the final native
+instruction configuration, atom-level lane mapping, rendering, compilation,
+and execution within the validated class.
+
+\section*{Programs and Frontends}
+
+A program is a Python function decorated with \texttt{@tg.kernel}. The
+decorator parses a restricted Python subset and returns a callable
+\op{TileKernel}. The public \texttt{KernelBuilder} API constructs the same IR
+directly; it is not a second language.
+
+\op{TileKernel} is a frontend compiler and specializer, not a runtime JIT. On
+invocation it binds compile-time and shape-specialized values, selects a cached
+specialization or creates one, allocates declared outputs, and constructs a
+\texttt{Tensor.custom\_kernel} call.
 
 \begin{lstlisting}
-@tilegrad.jit
-def matmul(A, B, *, BM: T.Const[int]=64,
-           BN: T.Const[int]=64, BK: T.Const[int]=32):
-  M, N, K = T.const("M", "N", "K")
-  A: T.Tensor[(M, K), T.float16]
-  B: T.Tensor[(K, N), T.float16]
-  C = T.empty((M, N), T.float16)
+@tg.kernel
+def matmul(A, B, *, BM: T.Const[int] = 64,
+           BN: T.Const[int] = 64, BK: T.Const[int] = 32):
+    M, N, K = T.const("M", "N", "K")
+    A: T.Tensor[(M, K), T.float16]
+    B: T.Tensor[(K, N), T.float16]
+    C = T.empty((M, N), T.float16)
 
-  with T.Kernel(T.ceildiv(N, BN), T.ceildiv(M, BM),
-                threads=128) as (bx, by):
-    As = T.shared((BM, BK), T.float16)
-    Bs = T.shared((BK, BN), T.float16)
-    acc = T.fragment((BM, BN), T.float32)
-    T.clear(acc)
-    for ko in T.Pipelined(T.ceildiv(K, BK), stages=3):
-      T.copy(A.tile((by*BM, ko*BK), (BM, BK)), As, pad=0)
-      T.copy(B.tile((ko*BK, bx*BN), (BK, BN)), Bs, pad=0)
-      T.mma(As, Bs, acc)
-    T.copy(acc, C.tile((by*BM, bx*BN), (BM, BN)))
-  return C
+    with T.Kernel(T.ceildiv(N, BN), T.ceildiv(M, BM),
+                  threads=128) as (bx, by):
+        As = T.shared((BM, BK), T.float16)
+        Bs = T.shared((BK, BN), T.float16)
+        acc = T.fragment((BM, BN), T.float32)
+        T.clear(acc)
+        for ko in T.Serial(T.ceildiv(K, BK)):
+            T.copy(A.tile((by*BM, ko*BK), (BM, BK)), As, pad=0)
+            T.copy(B.tile((ko*BK, bx*BN), (BK, BN)), Bs, pad=0)
+            T.mma(As, Bs, acc)
+        T.copy(acc, C.tile((by*BM, bx*BN), (BM, BN)))
+    return C
 \end{lstlisting}
 
-\section*{Values and Storage}
+\subsection*{Specialization}
 
-A view is the tuple $(B,o,\mathbf{s},\mathbf{d})$, where $B$ is the base
-storage, $o$ is an element offset, $\mathbf{s}$ is the logical shape, and
-$\mathbf{d}$ contains the element strides. A view also has a dtype, rank,
-address space, access mode, layout, bounds, and effects.
-
-A coordinate $\mathbf{i}$ is in the logical domain when
-$0\leq i_k<s_k$ for every axis. Its mapped address is
-$o+\sum_k i_kd_k$. A coordinate in the logical domain is storage-valid only
-when its mapped address lies within the base allocation. An operation \may{} use a
-logical coordinate that is not storage-valid only when that operation defines
-masking, padding, or access-suppression semantics.
+Values are classified as follows:
 
 \begin{center}
 \begin{tabularx}{\textwidth}{@{}lYY@{}}
 \toprule
-\textbf{Space} & \textbf{Ownership} & \textbf{Purpose} \\
+\textbf{Class} & \textbf{Meaning} & \textbf{Legal use} \\
 \midrule
-Global & Program or invocation & Inputs, outputs, and workspaces. \\
-Shared & Workgroup or cluster & Cooperative staging and communication. \\
-Fragment & Participant group & Lane-distributed values and accumulators. \\
-Private & One local agent & Scalars and statically indexed register storage. \\
-Reducer & Participant group & Reduction or scan state. \\
-Barrier/descriptor & Target-defined participant group & Async transactions,
-matrix operations, and target storage. \\
-Target & Named capability & Tensor memory or another advertised physical scope. \\
+Compile-time & Python value included in the specialization key. & Shapes,
+layouts, launch geometry, unrolling, and scheduling. \\
+Shape-specialized & Value bound from a tensor shape or stride and included in
+the key. & Same uses as a compile-time value after binding. \\
+Runtime & Device scalar not specialized by value. & Scalar expressions,
+predicates, indices, and serial loop bounds. \\
 \bottomrule
 \end{tabularx}
 \end{center}
 
-Local allocations have shapes fixed during specialization and lexical lifetimes.
-Dynamic shared storage requires a capability. A fragment is one shaped logical
-value. Legalization assigns each fragment coordinate to one physical owner
-unless a replicated layout states otherwise. An implementation \mustnot{} use
-complete per-lane replication as a fallback unless the layout requests it.
-Private dynamic indexing \may{} spill only when the source or conformance profile
-permits spilling.
+Runtime values \mustnot{} determine allocation or launch shapes. The
+specialization key \must{} include all values affecting generated UOps,
+including dtype, rank, shape, admitted strides, target, layouts, numerical
+mode, selected profile names and versions, advertised capability tuple, tuned
+schedule configuration, TileGrad revision, and pinned \tinygrad{} revision.
 
-\op{Tile}, \op{Subview}, \op{Transpose}, \op{Reshape}, and \op{View} create
-aliases. They do not copy data. \op{Reshape} requires a physical layout that the
-compiler can prove compatible. \op{View} \may{} reinterpret the dtype only when the
-total byte size is unchanged and the required alignment is satisfied.
+Repeated symbols in tensor and shape declarations \must{} bind to the same
+value. Outputs \mustnot{} alias an input or another output unless the
+declaration explicitly permits the alias and validation proves the effects
+legal.
 
-A tile \may{} include coordinates that are not storage-valid, but each operation
-that consumes those coordinates \must{} mask, pad, or suppress the corresponding
-accesses. Between synchronization points, each non-atomic writable address
-\must{} have exactly one dynamic writer. Views with zero strides, negative
-strides, or overlapping coordinates are otherwise read-only.
+TileGrad owns only the specialization cache from this key to scheduled Tile IR
+and its UOp Sink. \tinygrad{} owns program compilation and binary caches.
 
-A copy between overlapping source and destination regions requires snapshot
-mode. In snapshot mode, every logical source value is read before any
-destination value is written. If the compiler cannot prove this ordering safe,
-it \must{} reject the copy.
+Kernel regions are submitted in source order. An implementation may overlap
+independent regions only when \tinygrad{} represents the required dependencies
+and the overlap preserves every data and effect ordering. Returning a tensor
+does not require a host synchronization. Workgroups in one launch are
+unordered.
+
+\subsection*{tinygrad composition}
+
+A \op{TileKernel} \must{} compose inside \tinygrad{}
+\texttt{@function(precompile=True)} and inside an enclosing
+\texttt{TinyJit}. \texttt{@function} provides a reusable parameterized Tensor
+graph and optional precompilation; \texttt{TinyJit} captures and replays an
+enclosing execution graph. TileGrad \mustnot{} automatically create a
+\texttt{TinyJit}, because JIT ownership belongs to the caller and nested
+\texttt{TinyJit} capture is unsupported.
+
+\section*{Types and Scalar Expressions}
+
+\TileGrad{} inherits scalar dtypes, constants, promotion, casts, bitcasts, and
+ALU semantics from the pinned \tinygrad{} revision. Core includes booleans,
+signed and unsigned integers, \texttt{float16}, \texttt{bfloat16},
+\texttt{float32}, and \texttt{float64}. A target execution claim applies only
+when the pinned \tinygrad{} target can legally lower the dtypes used by the
+program. Unsupported target and dtype combinations \must{} be diagnosed rather
+than silently substituted. FP8, sub-byte, packed, and mixed low-precision
+formats require an advertised Standard or Target profile.
+
+Scalar and index expressions lower directly to \tinygrad{} UOps. Tile IR
+\mustnot{} define an independent arithmetic graph. The frontend may wrap UOps
+to preserve source locations and TileGrad type diagnostics.
+
+Index arithmetic \must{} be integral and \mustnot{} wrap to produce a valid
+address. Floating-point and integer results follow \tinygrad{} semantics.
+
+A versioned numerical conformance manifest \must{} record the selected
+\tinygrad{} numerical mode and the permitted rounding, reassociation,
+contraction, approximation, denormal, NaN, infinity, signed-zero, and tolerance
+behavior for every tested operation and profile. The manifest makes inherited
+\tinygrad{} semantics reproducible; it does not define a second numerical
+contract.
+
+\section*{Buffers, Views, and Storage}
+
+A buffer has a dtype, shape, storage scope, access mode, and optional layout. A
+view is $(B,o,\mathbf{s},\mathbf{d})$, where $B$ is a base buffer, $o$ is an
+element offset, $\mathbf{s}$ is the logical shape, and $\mathbf{d}$ contains
+element strides.
+
+\begin{center}
+\begin{tabularx}{\textwidth}{@{}lYY@{}}
+\toprule
+\textbf{TileGrad scope} & \textbf{tinygrad representation} & \textbf{Use} \\
+\midrule
+Global & \op{Param}/\op{Buffer}, \texttt{AddrSpace.GLOBAL} & Inputs, outputs,
+and invocation workspaces. \\
+Shared & \op{Buffer}, \texttt{AddrSpace.LOCAL} & Workgroup cooperative staging. \\
+Private & \op{Buffer}, \texttt{AddrSpace.REG} & Per-agent scalar or register storage. \\
+Fragment & TileGrad logical value, lowered to \texttt{REG} values & Distributed
+tiles and matrix accumulators. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Core allocators are \op{empty}, \op{shared}, \op{private}, and \op{fragment}.
+Local shapes and layouts \must{} be fixed during specialization.
+
+\op{Tile}, \op{Subview}, \op{Transpose}, \op{Reshape}, \op{Broadcast}, and
+\op{View} create aliases and do not copy data. A dtype reinterpretation requires
+equal byte size and valid alignment.
+
+A coordinate is storage-valid only when its mapped byte range lies within the
+base allocation and satisfies the required alignment. \op{Reshape} \must{} be
+rejected unless physical-layout compatibility is proven. Views with negative
+strides, zero strides, or overlapping logical coordinates \must{} be read-only
+unless a selected profile defines writable semantics.
+
+A logical tile may extend beyond its base allocation. Every consuming load,
+store, or copy \must{} mask, pad, or suppress invalid coordinates. Writable
+views with overlapping coordinates are invalid unless the operation is atomic.
+Core external tensors are dense and contiguous; strided external tensors are a
+Standard profile.
+
+A \op{Copy} whose source and destination may overlap \must{} either use explicit
+snapshot semantics, in which all logical source values are read before any
+destination value is written, or be rejected. It \mustnot{} be lowered as an
+ordinary parallel copy when that ordering cannot be proven.
+
+Scheduled Tile IR \must{} retain storage scope, alignment, contiguity, layout,
+alias information, and bounds facts until \op{TileCopy} and \op{TileMMA}
+capability selection is complete.
+
+\section*{Execution and Control}
+
+\begin{center}
+\begin{tabularx}{\textwidth}{@{}lYY@{}}
+\toprule
+\textbf{Form} & \textbf{Semantics} & \textbf{tinygrad axis} \\
+\midrule
+Kernel & A grid of unordered workgroups with fixed local geometry. &
+\op{GLOBAL} and \op{LOCAL}. \\
+Serial & Ordered half-open integer iteration. & \op{LOOP}. \\
+Parallel & Unordered logical iteration distributed by a layout. & \op{GLOBAL}
+or \op{LOCAL}. \\
+Reduce & A recurrence over an associative operation. & \op{REDUCE}. \\
+Unroll & Serial semantics with full expansion requested. & \op{UNROLL}. \\
+Vectorized & Serial element semantics with packed execution requested. &
+\op{UPCAST}. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+On a target without physically distinct workgroups or local agents, the pinned
+adapter may serialize or otherwise legally realize these logical axes. The
+realization \must{} preserve Core semantics and \mustnot{} require a Target
+profile.
+
+Compile-time Python control executes during specialization. Runtime
+conditionals lower to predicates, selects, and gated memory operations. Core
+does not require runtime \texttt{while}, \texttt{break}, or \texttt{continue}.
+
+Raw workgroup and local IDs are available to low-level builder code. Source
+programs \should{} use logical \op{Parallel} and layouts instead.
+
+\subsection*{Standard scheduling forms}
+
+\op{Pipelined} has serial program semantics and may be accepted without the
+Scheduling profile as a scheduling hint. A claim that it emits overlapping
+stages requires the Scheduling profile, which versions affected storage and
+emits a prologue, steady state, and epilogue. A claim that it overlaps memory
+transactions requires the Async Pipeline profile.
+
+\op{Persistent} assigns logical work items to a fixed set of workgroups. Each
+item \must{} execute exactly once in a successful invocation. Persistent scheduling
+is part of the Scheduling profile, not Core.
+
+\section*{Core Tile Operations}
+
+\begin{center}
+\begin{tabularx}{\textwidth}{@{}lYY@{}}
+\toprule
+\textbf{Operation} & \textbf{Semantics} & \textbf{Portable lowering} \\
+\midrule
+Load & Read a coordinate; return an alternate value when masked or invalid. &
+\op{Index}+\op{Load} with gate. \\
+Store & Write a coordinate only when its mask and bounds are valid. &
+\op{Index}+\op{Store} with gate. \\
+Copy & Transfer equal-shaped regions; pad invalid source coordinates and
+suppress invalid destination writes. Destination is ready on return. &
+Distributed \op{Load}/\op{Store} plus required workgroup barriers. \\
+Fill/Clear & Write a scalar to all valid destination coordinates; clear uses
+zero. & Distributed \op{Store}. \\
+Map/Select/Cast & Pointwise fragment and scalar operations with right-aligned
+broadcasting. & \tinygrad{} elementwise UOps. \\
+MMA & Accumulate logical $A\times B$ into $C$; no implicit clear. & Canonical
+\op{Mul}+\op{Reduce} or scalar \op{Mulacc}. \\
+Reduce & Sum, product, maximum, or minimum over declared axes and accumulator
+dtype. & \op{Reduce}; minimum may use an equivalent decomposition. \\
+Scan & Inclusive or exclusive sum or maximum over one axis. & Ordered
+\op{Range} and private recurrence. \\
+Barrier & Synchronize the workgroup and shared-memory accesses. &
+\op{Barrier}. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Copy and other cooperative operations are collective over their resolved
+participant layout. A participant \must{} reach each dynamic collective instance
+exactly once. The compiler \must{} reject a collective under control flow when
+convergence cannot be established.
+
+\op{TileCopy} and \op{TileMMA} \must{} retain their logical identity, extents,
+masks, layouts, participant mapping, storage scopes, alignment, pipeline stage,
+and requested mechanism through scheduled Tile IR and capability selection.
+Legalization \mustnot{} scalarize or flatten either operation before determining
+whether an advertised target-aware lowering is eligible.
+
+After selecting a portable or profiled lowering, tile operations may be
+eliminated into typed \tinygrad{} operations or a documented UOp pattern whose
+recognition and schedule preservation are tested for the pinned \tinygrad{}
+revision. Portable \op{Copy} always has a distributed load/store lowering. A
+profile may select vectorized, cooperative, swizzled, or asynchronous transfer
+only when its capability contract admits the scopes, layout, alignment, shape,
+and participant geometry.
+
+\op{MMA} \must{} specify operand orientation, logical contraction axes, input
+dtypes, accumulator dtype, and result layout. Native lowering \must{} preserve
+that logical contract even when the selected native atom has different internal
+fragment geometry.
 
 \section*{Layouts}
 
-A layout maps each logical coordinate to one or more participant-slot pairs.
-Multiple pairs are permitted only for a replicated layout. Layouts apply to
-parallel loops, fragments, shared storage, and matrix atoms. When the source does
-not specify a layout, the compiler \must{} infer a legal one. The resolved
-mapping \must{} be inspectable.
-
-The source \may{} request a canonical row-major or column-major distribution, a
-composition of reshape, repeat, and permutation operations, a shared-memory
-swizzle, or a named capability layout.
-
-Layouts \must{} cover each logical coordinate exactly as required by the
-operation. A layout \mustnot{} introduce data races or make observable results
-target-dependent. Code that combines raw thread access with logical parallel
-access \must{} name a compatible layout. The language supports arbitrary
-target-independent layout composition. A layout tied to an instruction, warp
-size, bank geometry, or descriptor format requires a named capability.
-
-\section*{Control and Scheduling}
-
-\begin{center}
-\begin{tabularx}{\textwidth}{@{}lY@{}}
-\toprule
-\textbf{Form} & \textbf{Semantics} \\
-\midrule
-Serial & Ordered iteration over a half-open integer interval. \\
-Unroll & Serial semantics with a request to expand iterations during specialization. \\
-Vectorized & Serial element semantics with a request to use packed instructions. \\
-Parallel & Unordered logical Cartesian iteration distributed by a layout. \\
-Reduce & A recurrence that \may{} be reassociated under the numerical contract. \\
-Pipelined & Serial semantics with an inferred pipeline depth or source-specified
-stages and order. \\
-Persistent & Logical work items assigned statically or dynamically to resident
-workgroups. Under the capability's progress model, each item executes exactly
-once in a successful invocation. \\
-\bottomrule
-\end{tabularx}
-\end{center}
-
-Device control includes conditionals and selects with runtime predicates, while
-loops with runtime conditions, and break and continue statements in serial and
-while loops. Divergent control flow is legal unless it contains a collective
-whose convergence the compiler cannot prove. The compiler folds compile-time
-conditions during specialization. Host Python helpers run only during
-specialization. Device macros are typed, hygienic, and inlined during
-specialization.
-
-Pipeline scheduling applies to effectful statements. The compiler versions
-affected storage and emits the required prologue, steady state, and epilogue.
-When the selected capability provides asynchronous operations, the compiler
-\may{} insert the corresponding commits, waits, and barriers. Otherwise, it
-executes the pipeline synchronously while preserving serial semantics. Pure
-scalar expressions \may{} be recomputed at their points of use.
-
-A source-specified stage or order \must{} respect every data and effect
-dependency. Coalescing, cache policy, rasterization, occupancy, warp
-specialization, and register allocation are non-semantic scheduling hints unless
-the source requests an exact capability. Autotuning \may{} search compile-time
-parameters and scheduling hints. The chosen configuration and resulting
-legalized IR \must{} be reproducible and inspectable.
-
-Raw local IDs are available to manual workgroup code. Access to lane, subgroup,
-warp, warp-group, cluster, and grid IDs requires expert capabilities with
-declared geometry. These IDs do not replace logical \op{Parallel}. Code that
-uses them is responsible for mapping assumptions not represented by a layout.
-
-\section*{Tile Operations}
-
-An agent is one local execution instance. A participant group is the fixed set
-of agents that take part in one dynamic collective instance. The collective is
-convergent when every member executes that instance exactly once with compatible
-parameters.
-
-Each operation declares whether it is per-agent or collective. Scalar
-expressions, pointwise fragment maps, scalar memory operations, and atomics \may{}
-appear in divergent control flow. Cooperative copies and transforms, MMA
-operations, distributed reductions and scans, and synchronization operations are
-collective. Their default participant group is the workgroup. A target \may{} use
-smaller native groups only when legalization partitions the logical operation
-without exposing that choice to the program.
-
-\begin{center}
-\begin{tabularx}{\textwidth}{@{}lYY@{}}
-\toprule
-\textbf{Operation} & \textbf{Inputs} & \textbf{Semantics} \\
-\midrule
-Fill/Clear & destination, scalar & Write every storage-valid destination coordinate;
-clear fills with zero. \\
-Copy & source, destination, pad, hints & Synchronously transfer equal-shaped
-regions. Use the pad value for source coordinates that are not storage-valid and
-suppress writes to destination coordinates that are not storage-valid. \\
-AsyncCopy & source, destination, hints & Start an advertised transfer and return
-a token. An access that requires transfer completion is invalid until a wait on
-the token provides the required completion guarantee. \\
-Transpose/Transform & source, destination, map & Cooperative data rearrangement,
-including transpose and im2col-style maps. \\
-MMA & A, B, accumulator, transforms & Accumulate logical matrix multiplication;
-no implicit clear. \\
-SparseMMA & values, metadata, B, accumulator & Accumulate a declared structured
-sparse matrix multiplication. \\
-Map/Select/Cast & fragments or scalars & Pointwise operation with right-aligned
-broadcasting. The operation returns a new logical value. \\
-Reduce & source, axes, op, dtype & Sum, product, min, max, or bitwise
-reduction with a specified accumulator dtype and optional retained axes. \\
-Scan & source, axis, op, direction & Inclusive or exclusive prefix operation;
-segmented scans are a capability. \\
-Load & view, coordinates, mask, alternate & Return the alternate value when the
-mask is false or the mapped address is invalid. A masked-off load need not form
-an address. \\
-Store & view, coordinates, value, mask & Write only when the mask is true and
-the mapped address is valid. \\
-Atomic & operation-specific operands, order, scope & Atomic load/store, RMW, and
-compare-exchange. The operation defines whether it returns the old value or a
-success result. \\
-Diagnose & condition, values/message & Bounded device assertion and debug output.
-The implementation \may{} use a debug buffer when target diagnostics are unavailable. \\
-\bottomrule
-\end{tabularx}
-\end{center}
-
-The destination of \op{Copy} is ready for use when the operation returns, even
-if its lowering uses asynchronous instructions.
-
-\op{AsyncCopy} exposes asynchronous execution to expert code. Legalization
-\must{} reject an \op{AsyncCopy} whose scope, shape, alignment, or target is not
-supported. It \mustnot{} replace the operation with a synchronous copy. A copy
-\may{} infer its extent when one shaped operand determines that extent.
-Broadcasting requires a broadcast view.
-
-Transfer hints \may{} specify a layout, vector width, cache policy, or preferred
-mechanism. A hint does not affect program semantics unless it requests an exact
-mechanism. A transaction capability \may{} define descriptors, expected-byte-count
-or arrival-count accounting, commit groups, parity-based or count-based waits,
-and separate completion points for source reads and destination writes. Each
-token identifies its transaction family and the completion guarantee provided by
-waiting on that token.
-
-\op{MMA} supports operand transposition, a specified accumulator dtype, and an
-optional instruction mode. Portable dense \op{MMA} \must{} have a SIMT lowering.
-\op{SparseMMA} requires a capability that defines its metadata format and the
-semantics of any permitted fallback.
-
-Elementwise operations include arithmetic, comparisons, logical operations,
-clamp, select, casts, exponentials, logarithms, trigonometry, reciprocal, square
-root, and common activation functions. Dtype-specific dot products, packed
-quantization, random generation, and custom transforms \must{} be expressed as
-compositions or capabilities rather than untyped source injection.
-
-\section*{Effects and Synchronization}
-
-An effect names a base storage region, access kind, participant group, and
-memory scope. Within one agent, or within an ordered collective operation,
-source order defines the sequenced-before relation. A release operation
-synchronizes with a matching acquire operation at a compatible scope.
-Happens-before is the transitive closure of sequenced-before and
-synchronizes-with.
-
-Two unordered conflicting accesses form a data race when at least one is a
-non-atomic write. A program with a data race is invalid. Separate workgroups
-\must{} communicate only through atomics or an advertised cooperative or cluster
-mechanism.
-
-The supported atomic orders are relaxed, acquire, release, acquire-release, and
-sequentially consistent. Legalization \must{} reject any unsupported combination
-of operation, order, and scope.
-
-Managed storage uses compiler-planned synchronization. The compiler \must{}
-preserve read-after-write and write-after-write dependencies, loop-carried
-dependencies, and write-after-read dependencies before reusing storage. The
-source \may{} select manual synchronization for an allocation or region. Manual
-synchronization \mustnot{} be mixed with managed access unless an explicit
-operation transfers ownership.
-
-Each barrier and asynchronous token declares its participant group, memory scope,
-and ordering semantics. A plain \tinygrad{} \op{Barrier} provides only the
-workgroup semantics guaranteed by the pinned adapter. Other scopes require typed
-UOps admitted by the integration contract.
-
-When advertised by the target, the language supports subgroup, workgroup,
-cluster, and cooperative grid barriers. It also supports arrival and wait
-barriers for asynchronous transactions. Every participant \must{} reach each
-barrier convergently.
-
-Votes, ballots, shuffles, lane matching, and predicated block synchronization
-are participant-group capabilities. Each such capability defines its width and
-mask. None assumes a universal warp size.
-
-\section*{Capabilities}
-
-A capability is a versioned, namespaced contract among \TileGrad{}, a target,
-and a compatible \tinygrad{} revision. It identifies the target predicate and
-operation. It also defines the supported dtypes, shapes or atoms, participant
-geometry, operand scopes, layouts, alignment, effects, required UOps, and
-numerical behavior.
-
-The mode \texttt{auto} permits any compatible capability or portable lowering.
-The mode \texttt{portable} requests scalar or SIMT execution. An exact
-capability request \mustnot{} fall back to another lowering. If the requested
-capability is unavailable, legalization \must{} report the source operation,
-expected contract, observed types and shapes, target, and missing feature.
-
-The legalized IR \must{} show the selected capability and every layout, barrier,
-and storage allocation inserted by the compiler.
-
-Standard capability families are:
+A layout maps a logical coordinate to a participant and one or more local
+slots. Core layouts are:
 
 \begin{itemize}
-  \item native matrix operations represented through \tinygrad{} \op{Wmma},
-        including MMA/WMMA, WGMMA, MFMA, TCGEN05, and simdgroup families;
-  \item cooperative/vector memory operations, asynchronous copy, TMA-like
-        multidimensional transfer, proxy fences, shared swizzles, and cache controls;
-  \item structured sparse matrix operations and low-precision packed formats;
-  \item subgroup collectives, atomics, memory barriers, clusters, cooperative
-        grids, dependent launch, warp specialization, and persistent scheduling; and
-  \item descriptor-managed or target storage such as tensor memory, including
-        allocation, lifetime, fences, and register-budget controls.
+  \item row-major and column-major distributions;
+  \item blocked and per-thread tile distributions;
+  \item replicated distributions;
+  \item composition by reshape, repeat, and permutation.
 \end{itemize}
 
-These families describe feature classes, not NVIDIA source APIs. Support for a
-family is optional unless a conformance profile requires it. A backend \must{}
-expose only families admitted by the pinned integration contract. Each exposed
-family requires typed \tinygrad{} UOps and renderer, compiler, and runtime support.
+Layouts may apply to \op{Parallel}, fragments, shared storage, and tile
+operations. A source-specified layout is exact. When the source requests
+inference, the compiler may select a target- and capability-aware legal layout;
+after selection, the resolved layout becomes exact for the specialization and
+\must{} be inspectable.
 
-Capability adapters define target-specific descriptor fields, fence sequences,
-and instruction schemas. Backend source injection is not a TileGrad language
-capability.
+Instruction fragment layouts are owned by the pinned \tinygrad{}
+\texttt{TensorCore} configuration. TileGrad owns the outer tile and participant
+schedule but \mustnot{} duplicate the renderer's native matrix atom mapping.
 
-\section*{Numerics}
+Shared-memory bank swizzles and instruction-specific layouts belong to Target
+profiles. They \mustnot{} appear in the Core API under instruction names.
 
-Scalar types are bool, signed and unsigned integers, float16, bfloat16, float32,
-and float64. Float8, sub-byte integer and floating-point types, packed vectors,
-and mixed formats require a capability. A Python literal converts to the type
-required by its context; every other type change uses a cast or bitcast. Index
-values are integral.
+Every performance capability \must{} declare compatible outer layouts,
+fragment layouts, shared-memory layouts, alignment, and participant geometry.
+Legalization \must{} either choose a compatible inferred layout or reject an
+incompatible explicit layout; it \mustnot{} silently reinterpret an explicit
+mapping. A selected shared-memory swizzle or bank layout \must{} survive
+lowering in a typed or documented representation understood by the pinned
+\tinygrad{} adapter.
 
-Each reduction and MMA specifies its associative operator, identity,
-empty-domain result, and accumulator dtype. Integer addition, subtraction,
-multiplication, negation, and bitwise operations are modular. Separate rules
-define the results or failure conditions for division, shifts, conversion, and
-index overflow. Index arithmetic \mustnot{} wrap to produce a valid address.
-Floating-point operations are defined by their real-valued formulas.
+\section*{Schedule Ownership}
 
-The numerical mode selects strict or fast behavior. The lowering mode
-independently selects portable, auto, or an exact capability. A capability is
-eligible only when it satisfies the selected numerical mode.
+The following source decisions are exact:
 
-The normative numerical manifest defines rounding, reassociation, contraction,
-approximation error, denormal handling, infinity, NaN, signed zero, and
-per-operation tolerances.
+\begin{itemize}
+  \item grid and workgroup geometry;
+  \item logical tile shapes;
+  \item execution-axis kind and nesting order;
+  \item storage scope and explicit storage versions;
+  \item participant and fragment layouts;
+  \item explicit barriers and requested mechanism
+        \texttt{portable} or \texttt{native}.
+\end{itemize}
 
-\section*{Lowering}
+Legalization may rewrite an exact decision only as required to represent the
+same mapping on the selected target. It \mustnot{} silently replace the source
+schedule with a different schedule.
+
+The following are non-semantic hints:
+
+\begin{itemize}
+  \item vector width and unroll factor;
+  \item pipeline depth when its mode is \texttt{auto};
+  \item persistent traversal order and rasterization;
+  \item occupancy, cache, and coalescing preferences;
+  \item mechanism selection when its mode is \texttt{auto}.
+\end{itemize}
+
+\texttt{portable} requires the Core lowering. \texttt{native} requires a
+compatible advertised profile, including Native Matrix or a Target profile,
+and \must{} reject when unavailable. \texttt{auto} may select any eligible
+lowering without changing program semantics.
+
+Autotuning may search only parameters or alternatives explicitly declared
+tunable by the program or selected profile. It \mustnot{} alter an exact source
+decision. The search space, capability tuple, benchmark method, selected
+configuration, and legalized IR \must{} be reproducible and inspectable.
+
+A performance claim requires target-aware selection of \op{TileCopy} and
+\op{TileMMA} layouts, vectorization, staging, pipeline depth, and launch
+geometry. Disabling \tinygrad{} heuristic optimization does not by itself
+establish that the resulting schedule is performant.
+
+\section*{Synchronization and Effects}
+
+Source order orders operations within one agent and within one collective.
+\op{Barrier} orders workgroup shared-memory accesses. Two unordered accesses to
+the same address are invalid when at least one is a non-atomic write.
+
+The compiler \must{} preserve read-after-write, write-after-write,
+write-after-read, and loop-carried dependencies before reordering operations or
+reusing storage. Each collective, barrier, token, and profiled memory operation
+\must{} declare its participant group, affected memory scope, and ordering
+effects. Separate workgroups \must{} communicate only through typed atomics or
+an advertised cooperative, cluster, or grid mechanism with matching launch
+support.
+
+Core provides only workgroup synchronization. Subgroup, cluster, cooperative
+grid, and async transaction synchronization require profiles with matching
+typed UOps and runtime launch support. A workgroup barrier \mustnot{} be used as
+a fallback for a wider scope.
+
+Async operations return a typed token. A dependent access is invalid until a
+wait on that token establishes completion. This rule is normative for the
+Async Pipeline profile; Core has no async tokens.
+
+An Atomics profile \must{} define each operation's result, supported memory
+orders and scopes, and target mapping. Unsupported operation, order, and scope
+combinations \must{} be rejected.
+
+\section*{Lowering to \tinygrad{}}
 
 \begin{center}
 \begin{tabularx}{\textwidth}{@{}lY@{}}
 \toprule
 \textbf{Stage} & \textbf{Responsibility} \\
 \midrule
-Specialize & Bind compile-time and shape-specialized values and form the cache key. \\
-Typed tile IR & Verify types, shapes, views, effects, uniformity, and resources. \\
-Scheduled tile IR & Resolve logical layouts, pipelines, storage versions, and
-managed synchronization. \\
-Legalized tile IR & Select a portable lowering or an exact capability and make
-participant ownership, masks, barriers, and target storage explicit. \\
-\tinygrad{} UOps & Emit only operations admitted by the pinned integration
-contract, including optional typed UOps for atomic, synchronization, transaction,
-and \op{Wmma} operations. \\
-Program & Delegate optimization, rendering, compilation, launch, and execution
-to a compatible \tinygrad{} device/runtime. \\
+Specialize & Bind compile-time and shape values and form the cache key. \\
+Tile IR & Check types, shapes, views, storage, bounds, and collective legality. \\
+Scheduled Tile IR & Resolve execution axes, layouts, storage versions, and
+scheduling requests. \\
+Legalized Tile IR & Select portable or profile operations and make masks,
+ownership, and barriers explicit. \\
+UOp Sink & Emit a scheduled \op{Sink} with \texttt{KernelInfo} through
+\texttt{Tensor.custom\_kernel}. \\
+Program & Delegate required legalization, rendering, compilation, launch, and
+execution, program caching, and JIT replay to \tinygrad{}. \\
 \bottomrule
 \end{tabularx}
 \end{center}
 
-Every named IR stage \must{} be inspectable and verifiable. The compiler
-\must{} eliminate all tile-only nodes before the UOp boundary. A conforming
-\TileGrad{}/\tinygrad{} pairing \must{} preserve emitted memory effects and
-synchronization and reject any requested mechanism that it cannot represent.
+Core kernels emit \op{Param}, \op{Buffer}, \op{Range}, \op{End}, \op{Index},
+\op{Load}, \op{Store}, \op{After}, \op{Group}, \op{Reduce}, \op{Barrier},
+\op{Special}, constants, casts, and elementwise UOps admitted by the pinned
+\tinygrad{} specification. The integration contract \must{} list the exact
+admitted operations for each pinned revision range. Equivalent renamed or
+decomposed typed operations may be used only when that contract documents them.
 
-The implementation \must{} distinguish among invalid source programs,
-unsupported target capabilities, invalid UOp construction, compilation failures,
-and runtime failures.
+The adapter \must{} preserve every exact schedule decision while allowing
+\tinygrad{}'s required range expansion, reduction lowering, local-buffer
+materialization, GPU-dimension lowering, load/store insertion, dtype
+legalization, linearization, rendering, and compilation. Those passes may
+legalize representation but \mustnot{} select a new execution schedule.
+
+Required \tinygrad{} legalization passes may change representation, but they
+\must{} preserve the selected \op{TileCopy} and \op{TileMMA} participant
+mapping, layouts, memory scope, barriers, and capability mode. Integration tests
+\must{} verify this preservation in both the UOp graph and rendered program.
+
+An empty \texttt{KernelInfo.opts\_to\_apply} disables heuristic and beam
+optimizations but is not by itself a complete schedule lock. The pinned
+integration \must{} provide and test a supported schedule-preserving mechanism;
+it \mustnot{} rely on undocumented UOp tags.
+
+A \TileGrad{} 1.0 pairing is nonconforming unless its pinned integration has a
+documented and tested schedule-preserving custom-kernel path. Optimizer
+accidents, an empty option list, or a passing correctness test alone are
+insufficient.
+
+\section*{Capability Profiles}
+
+A capability profile is a versioned contract among \TileGrad{}, a target
+predicate, and a pinned \tinygrad{} revision range. Each advertised capability
+tuple \must{} identify:
+
+\begin{itemize}
+  \item target, renderer, and compatible TileGrad and \tinygrad{} revisions;
+  \item operations and typed UOps or documented typed recognition patterns;
+  \item supported dtypes, shapes, alignments, layouts, and storage scopes;
+  \item participant geometry and required launch metadata;
+  \item effects, synchronization, and completion semantics;
+  \item numerical mode and inspection signature; and
+  \item correctness gates and, when performance is claimed, benchmark gates.
+\end{itemize}
+
+Profile support \must{} be determined from this record rather than target-name
+checks or untyped renderer source injection. An exact profile request
+\mustnot{} silently fall back. In \texttt{auto} mode, an implementation may use
+the portable lowering when no eligible capability tuple exists, but inspection
+\must{} report the rejected native candidates and reasons.
+
+\section*{Native Matrix Profile}
+
+The Native Matrix profile may be advertised only for a capability tuple for
+which the pinned \tinygrad{} integration provides a typed native matrix
+operation or documented typed recognition path, a renderer-advertised
+configuration, compatible input and accumulator dtypes and shapes, compatible
+layouts and participant geometry, end-to-end compilation and launch support,
+and inspection proving that native matrix code was emitted. \tinygrad{} owns
+the native atom's instruction shape, lane mapping, operand swizzle, and final
+native matrix UOp.
+
+One versioned integration strategy may lower \op{MMA} to a canonical
+multiply-reduce form and apply an explicit \op{OptOps.TC} request. A
+\texttt{native} claim succeeds only when post-lowering inspection confirms the
+corresponding typed native matrix UOp. An ignored or unsuccessful request
+\must{} be treated as unavailable, not as native execution. The strategy may
+change without changing TileGrad language semantics.
+
+TileGrad source \mustnot{} construct renderer-internal native matrix arguments
+directly. An unavailable dtype, accumulator type, shape, or target \must{} either
+use the portable \op{MMA} lowering in \texttt{auto} mode or reject in
+\texttt{native} mode.
+
+Capability claims are made independently per target, \tinygrad{} revision
+range, renderer, dtype tuple, accumulator type, admitted shape set, and layout
+contract. CUDA MMA, AMD MFMA/WMMA, and Metal simdgroup operations are candidate
+families; naming a family does not claim support for every renderer or
+configuration in that family.
+
+Native Matrix targets TileLang-like throughput for ordinary dense and
+edge-tiled matrix workloads on advertised capability tuples. Each performance
+claim \must{} pass the versioned benchmark gates for its tuple. Exact TileLang
+parity, parity on unsupported tuples, and parity for asynchronous or
+target-specific mechanisms are not implied.
+
+\section*{Standard Profiles}
+
+\begin{center}
+\begin{tabularx}{\textwidth}{@{}lYY@{}}
+\toprule
+\textbf{Profile} & \textbf{Operations} & \textbf{Integration requirement} \\
+\midrule
+Vector and Cooperative & Vectorized/coalesced synchronous copy, distributed
+fill, map, and reduction. & Typed vector memory operations, participant layouts,
+and target-aware legality checks. \\
+Scheduling & \op{Pipelined}, \op{Persistent}, rasterization. & Scheduled Tile
+IR storage versioning; no async behavior required. \\
+Strided & Non-contiguous external tensor views. & Correct UOp indexing and
+alias validation. \\
+Async Pipeline & Async copy, commit, wait, transaction barriers. & Typed async
+UOps with explicit dependencies and completion tokens. \\
+Atomics & Atomic load/store, exchange, compare-exchange, and RMW with scope and
+order. & Typed atomic UOp support in each claimed renderer. \\
+Subgroup & Shuffle, ballot, vote, match, and subgroup reduction. & Typed
+subgroup UOps with declared width. \\
+Sparse and Packed & Structured sparse MMA, packed integer and low-precision
+formats. & Typed native operation and metadata layout. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Profile support is determined during specialization from the capability record.
+Unsupported operations \must{} report the source operation, requested profile,
+target, renderer, dtype, shape, layout, and missing integration feature. A
+Scheduling performance claim \must{} define the variants permitted for tuning
+and their benchmark gates; storage versioning alone establishes correctness,
+not performance. Async Pipeline does not imply TMA, WGMMA, or cluster support.
+
+\section*{Target Profiles}
+
+Target profiles expose mechanisms that are not portable language concepts,
+such as multidimensional hardware transfers, advanced matrix instructions,
+clusters, descriptor storage, target memory, register budgets, and cooperative
+launch.
+
+Target operations \must{} be namespaced, for example \texttt{T.cuda.*}, and
+\must{} have typed effects, validation, renderer support, and runtime launch
+support in the pinned integration. Raw \op{Custom} source strings are an
+experimental escape hatch and do not establish profile conformance.
+
+Expected future target families include async copy, TMA-like transfers, WGMMA,
+TCGEN05, tensor memory, cluster barriers, cooperative launch, sparse matrix
+operations, and block-scaled formats. Listing a family does not require a 1.0
+implementation to support it.
+
+The Standard Async Pipeline profile covers target-neutral typed async
+semantics. Descriptor-based multidimensional transfers, proxy fences, bulk
+transaction accounting, and TMA-specific behavior belong to Target profiles.
+TMA-like transfers, WGMMA, TCGEN05, tensor memory, clusters, and cooperative
+launch \mustnot{} be advertised unless the pinned \tinygrad{} integration
+provides typed operations, effects, synchronization, and launch metadata
+sufficient to represent them. Otherwise they are unsupported by \TileGrad{}
+1.0.
+
+\section*{Non-Normative Integration Roadmap}
+
+This section is informative and does not define language conformance. TileGrad
+should add capabilities by contributing small typed primitives to \tinygrad{},
+not by hiding major operations in source strings. A practical implementation
+order is:
+
+\begin{enumerate}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
+  \item a stable target-capability and resource-query API;
+  \item a documented native matrix selection and inspection path;
+  \item typed vector and shared-to-fragment memory operations;
+  \item generic typed atomics;
+  \item typed subgroup shuffle, ballot, and vote;
+  \item async copy with commit/wait tokens;
+  \item scoped barriers and async memory ordering;
+  \item cluster and cooperative launch metadata;
+  \item additional native matrix and target-storage operations as required.
+\end{enumerate}
+
+These additions are integration milestones, not Core language requirements.
+Schedule preservation is already a 1.0 integration requirement, not a roadmap
+item. A profile that depends on a roadmap item \mustnot{} be claimed until its
+typed integration is complete.
+
+\section*{Inspection and Diagnostics}
+
+The implementation \must{} expose:
+
+\begin{itemize}
+  \item parsed Tile IR;
+  \item scheduled and legalized Tile IR;
+  \item selected profiles and native matrix configuration;
+  \item capability-record version and rejected native candidates;
+  \item \op{TileCopy} and \op{TileMMA} lowering choices and resolved layouts;
+  \item tuned schedule parameters and benchmark-manifest entry;
+  \item emitted UOp Sink and \texttt{KernelInfo};
+  \item rendered source and launch geometry when provided by \tinygrad{}.
+\end{itemize}
+
+Errors \must{} distinguish invalid source, unsupported profile, invalid UOp
+construction, backend compilation failure, and runtime failure.
 
 \section*{Conformance}
 
-An implementation claiming \textbf{portable conformance} \must{} support copies,
-views, layouts, fragment algebra, reductions, scans, dense GEMM, and numerically
-stable causal and non-causal FlashAttention using scalar or SIMT paths. Tests
-cover masks, tails, invalid aliases, data races, and divergent collectives.
+An implementation claiming \textbf{Core 1.0} conformance \must{} support both
+frontends, specialization, Core storage and control, all Core tile operations,
+explicit layouts, workgroup semantics, inspection, and portable lowering on
+every target for which its pinned \tinygrad{} integration can legally lower and
+execute the Core UOps required by the test program. Core conformance \mustnot{}
+depend on native matrix, async, subgroup, cluster, or other optional profiles.
+The release \must{} publish a matrix of compatible and execution-tested targets.
+A generated \op{TileKernel} \must{} execute correctly inside a precompiled
+\tinygrad{} \texttt{@function} and an enclosing \texttt{TinyJit}.
 
-An implementation claiming \textbf{accelerated conformance} \must{} demonstrate
-a native matrix capability implemented with \op{Wmma} UOps, cooperative vector
-copy, distributed native fragments, and inspectable multi-stage storage with
-ordered commit and wait operations. The same inputs, shapes, and masks \must{} be
-exercised through both paths under the same numerical manifest entry.
+Core workload gates are:
 
-\textbf{Expert conformance} is claimed separately for each advertised capability
-family. Each claim \must{} include successful execution, rejection of unsupported
-shapes, types, and targets, effect and synchronization tests, inspectable
-legalization, and a pinned \tinygrad{} revision range. Asynchronous transfer,
-structured sparse MMA, atomics, subgroup exchange, clusters, cooperative launch,
-and descriptor-managed storage are independent claims.
+\begin{itemize}
+  \item masked multidimensional copy and transpose with irregular tails;
+  \item edge-tiled mixed-precision GEMM through the portable \op{MMA} path;
+  \item reductions and scans with irregular tails;
+  \item numerically stable softmax and a fused LayerNorm-style kernel; and
+  \item a fused GEMM epilogue that exercises layout and schedule preservation.
+\end{itemize}
 
-The portable workload gates are edge-tiled mixed-precision GEMM; reductions and
-scans with irregular tails; and numerically stable FlashAttention with masking,
-online softmax, two dense MMAs, and a log-sum-exp result computed using the
-natural logarithm. Structured sparse GEMM gates the sparse-MMA expert claim.
+A versioned performance manifest \must{} define, for every claimed capability
+tuple, benchmark workloads, shapes, dtypes, layouts, warmup, timing method,
+baseline and version, threshold, permitted variance, and correctness tolerance.
+Continuous conformance testing \must{} reject regressions beyond the published
+threshold. Core correctness conformance alone \mustnot{} be described as a
+performance claim.
+
+A \textbf{Native Matrix} claim \must{} run identical inputs, masks, and tails
+through portable and native paths, satisfy the pinned \tinygrad{} numerical
+behavior, prove emission of the selected typed native matrix operation, and
+pass the target-specific ordinary-MMA benchmark gates. The gates \should{} cover
+representative square, rectangular, edge-tiled, and fused-epilogue GEMMs and
+\must{} include a case where target-aware \op{TileCopy} and layout selection
+affect throughput.
+
+The official TileGrad 1.0 release \must{} satisfy Core on its published
+compatible-target matrix and \must{} satisfy Native Matrix on at least one
+suitable typed capability tuple. Native Matrix is not required on targets
+without suitable support. Additional implementations may claim Core 1.0 without
+claiming Native Matrix.
+
+Each additional profile claim \must{} include positive execution tests,
+rejection tests for unsupported targets and shapes, inspection of the relevant
+typed UOps, and a pinned \tinygrad{} revision range. A profile making a
+performance claim \must{} also pass its versioned benchmark gates; a profile
+making semantic claims only need not assert a speedup.
 
 Implicit autograd is not required. Explicit backward kernels are ordinary
-\TileGrad{} programs. The conformance suites, API reference, capability registry,
-and integration contract are versioned with this document.
+TileGrad programs. An implementation may integrate
+\texttt{Tensor.custom\_kernel}'s \texttt{grad\_fxn} hook.
+
+\section*{Non-Goals}
+
+\begin{itemize}
+  \item Exact TileLang source compatibility.
+  \item Exact or universal TileLang performance parity across targets, dtypes,
+        shapes, or mechanisms. Performance claims are capability-specific.
+  \item A TVM-style target registry or a second backend compiler.
+  \item A TileGrad runtime JIT, execution-graph capture system, or compiled
+        program cache separate from \tinygrad{}.
+  \item Exposing every vendor instruction in the Core namespace.
+  \item Replacing \tinygrad{} tensor-core selection, rendering, runtime, or
+        numerical semantics.
+  \item Claiming async, TMA, WGMMA, cluster, atomic, cooperative-launch, or
+        target-memory semantics through untyped source injection.
+\end{itemize}
 
 \end{document}
